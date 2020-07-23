@@ -143,6 +143,7 @@
   ValidateSetting(terrier::settings::Param::name, {type::TypeId::BOOLEAN, execution::sql::BoolVal(default_value)}, \
                   {type::TypeId::BOOLEAN, execution::sql::BoolVal(default_value)});
 
+<<<<<<< HEAD
 #define SETTING_string(name, description, default_value, is_mutable, callback_fn)            \
   {                                                                                          \
     std::string default_value_string{default_value};                                         \
@@ -150,6 +151,15 @@
     auto default_value_cve = std::make_unique<parser::ConstantValueExpression>(              \
         type::TypeId::VARCHAR, string_val.first, std::move(string_val.second));              \
     ValidateSetting(terrier::settings::Param::name, *default_value_cve, *default_value_cve); \
+=======
+#define SETTING_string(name, description, default_value, is_mutable, callback_fn)                                       \
+  {                                                                                                                     \
+    std::string default_value_string{default_value};                                                                    \
+    auto string_val = execution::sql::ValueUtil::CreateStringVal(default_value_string);                                 \
+    auto default_value_cve = std::make_unique<parser::ConstantValueExpression>(type::TypeId::VARCHAR, string_val.first, \
+                                                                             std::move(string_val.second));             \
+    ValidateSetting(terrier::settings::Param::name, *default_value_cve, *default_value_cve);                            \
+>>>>>>> patch added, code compiles and passes unit test
   }
 #endif
 
@@ -239,5 +249,4 @@
             {type::TypeId::VARCHAR, default_value_string_val.first, std::move(default_value_string_val.second)}, \
             is_mutable, 0, 0, &callback_fn));                                                                    \
   }
-
 #endif
