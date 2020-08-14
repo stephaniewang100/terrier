@@ -1,597 +1,202 @@
-#include <memory>
-#include <stack>
 #include <utility>
+#include <algorithm>
 #include <vector>
 
-#include "binder/bind_node_visitor.h"
-#include "execution/compiler/output_checker.h"
-#include "execution/exec/execution_context.h"
-#include "execution/executable_query.h"
-#include "execution/sql/value.h"
-#include "execution/vm/module.h"
-#include "main/db_main.h"
-#include "network/connection_context.h"
-#include "network/network_io_utils.h"
-#include "network/postgres/portal.h"
-#include "network/postgres/postgres_packet_writer.h"
-#include "network/postgres/statement.h"
-#include "optimizer/binding.h"
-#include "optimizer/cost_model/trivial_cost_model.h"
-#include "optimizer/optimizer.h"
+#include "optimizer/cost_model/cost_model.h"
+#include "execution/compiler/expression_util.h"
+#include "gtest/gtest.h"
+#include "optimizer/operator_node.h"
 #include "optimizer/optimizer_context.h"
 #include "optimizer/optimizer_defs.h"
-#include "optimizer/optimizer_task.h"
-#include "optimizer/optimizer_task_pool.h"
-#include "optimizer/pattern.h"
-#include "parser/postgresparser.h"
-#include "planner/plannodes/index_join_plan_node.h"
-#include "planner/plannodes/index_scan_plan_node.h"
+#include "optimizer/physical_operators.h"
+#include "optimizer/statistics/histogram.h"
+#include "optimizer/statistics/top_k_elements.h"
+
 #include "test_util/test_harness.h"
-#include "traffic_cop/traffic_cop_defs.h"
 
 namespace terrier::optimizer {
+class CostModelTests : public TerrierTest {
+ protected:
+  static constexpr size_t NUM_ROWS_A = 100'000;
+  static constexpr size_t NUM_ROWS_B = 5;
+  static constexpr size_t NUM_ROWS_C = 5;
+  static constexpr size_t NUM_ROWS_D = 5;
+  static constexpr size_t NUM_ROWS_E = 100'000;
 
-struct IdxJoinTest : public TerrierTest {
-  const uint64_t optimizer_timeout_ = 1000000;
+  ColumnStats column_stats_obj_a_1_;
+  ColumnStats column_stats_obj_b_1_;
+  ColumnStats column_stats_obj_c_1_;
+  ColumnStats column_stats_obj_d_1_;
+  ColumnStats column_stats_obj_e_1_;
 
-  void ExecuteSQL(std::string sql, network::QueryType qtype) {
-    std::vector<parser::ConstantValueExpression> params;
-    tcop_->BeginTransaction(common::ManagedPointer(&context_));
-    auto parse = tcop_->ParseQuery(sql, common::ManagedPointer(&context_));
-    auto stmt = network::Statement(std::move(sql), std::move(std::get<std::unique_ptr<parser::ParseResult>>(parse)));
-    auto result = tcop_->BindQuery(common::ManagedPointer(&context_), common::ManagedPointer(&stmt),
-                                   common::ManagedPointer(&params));
-    TERRIER_ASSERT(result.type_ == trafficcop::ResultType::COMPLETE, "Bind should have succeeded");
+  TableStats table_stats_obj_a_;
+  TableStats table_stats_obj_b_;
+  TableStats table_stats_obj_c_;
+  TableStats table_stats_obj_d_;
+  TableStats table_stats_obj_e_;
 
-    auto plan = tcop_->OptimizeBoundQuery(common::ManagedPointer(&context_), stmt.ParseResult());
-    if (qtype >= network::QueryType::QUERY_CREATE_TABLE) {
-      result = tcop_->ExecuteCreateStatement(common::ManagedPointer(&context_), common::ManagedPointer(plan), qtype);
-      TERRIER_ASSERT(result.type_ == trafficcop::ResultType::COMPLETE, "Execute should have succeeded");
-    } else {
-      network::WriteQueue queue;
-      auto pwriter = network::PostgresPacketWriter(common::ManagedPointer(&queue));
-      auto portal = network::Portal(common::ManagedPointer(&stmt));
-      stmt.SetPhysicalPlan(std::move(plan));
-      result = tcop_->CodegenPhysicalPlan(common::ManagedPointer(&context_), common::ManagedPointer(&pwriter),
-                                          common::ManagedPointer(&portal));
-      TERRIER_ASSERT(result.type_ == trafficcop::ResultType::COMPLETE, "Codegen should have succeeded");
-      result = tcop_->RunExecutableQuery(common::ManagedPointer(&context_), common::ManagedPointer(&pwriter),
-                                         common::ManagedPointer(&portal));
-      TERRIER_ASSERT(result.type_ == trafficcop::ResultType::COMPLETE, "Execute should have succeeded");
-    }
-
-    tcop_->EndTransaction(common::ManagedPointer(&context_), network::QueryType::QUERY_COMMIT);
-  }
-
+  StatsStorage stats_storage_;
+  CostModel cost_model_;
   void SetUp() override {
-    TerrierTest::SetUp();
+    /////// COLUMNS //////
+    // table 1 column stats
+    column_stats_obj_a_1_ = ColumnStats(catalog::db_oid_t(1), catalog::table_oid_t(1), catalog::col_oid_t(1),
+                                        NUM_ROWS_A, NUM_ROWS_A / 2.0, 0.2, {1, 2, 3}, {5, 5, 5}, {1.0, 5.0}, true);
 
-    std::unordered_map<settings::Param, settings::ParamInfo> param_map;
-    settings::SettingsManager::ConstructParamMap(param_map);
+    // table 2 column stats
+    column_stats_obj_b_1_ = ColumnStats(catalog::db_oid_t(1), catalog::table_oid_t(2), catalog::col_oid_t(1),
+                                        NUM_ROWS_B, NUM_ROWS_B, 0.0, {3, 4, 5}, {2, 2, 2}, {1.0, 5.0}, true);
 
-    db_main_ = terrier::DBMain::Builder()
-                   .SetUseGC(true)
-                   .SetSettingsParameterMap(std::move(param_map))
-                   .SetUseSettingsManager(true)
-                   .SetUseCatalog(true)
-                   .SetUseStatsStorage(true)
-                   .SetUseTrafficCop(true)
-                   .SetUseExecution(true)
-                   .Build();
+    // table 3 column stats
+    column_stats_obj_c_1_ = ColumnStats(catalog::db_oid_t(1), catalog::table_oid_t(3), catalog::col_oid_t(1),
+                                        NUM_ROWS_C, NUM_ROWS_C, 0.0, {3, 4, 5}, {2, 2, 2}, {1.0, 5.0}, true);
 
-    catalog_ = db_main_->GetCatalogLayer()->GetCatalog();
-    txn_manager_ = db_main_->GetTransactionLayer()->GetTransactionManager();
+    // table 4 column stats
+    column_stats_obj_d_1_ = ColumnStats(catalog::db_oid_t(1), catalog::table_oid_t(4), catalog::col_oid_t(1),
+                                        NUM_ROWS_D, NUM_ROWS_D, 0.0, {3, 4, 5}, {2, 2, 2}, {1.0, 5.0}, true);
 
-    tcop_ = db_main_->GetTrafficCop();
-    auto oids = tcop_->CreateTempNamespace(network::connection_id_t(0), "terrier");
-    context_.SetDatabaseName("terrier");
-    context_.SetDatabaseOid(oids.first);
-    context_.SetTempNamespaceOid(oids.second);
-    db_oid_ = oids.first;
+    // table 5 column stats
+    column_stats_obj_e_1_ = ColumnStats(catalog::db_oid_t(1), catalog::table_oid_t(5), catalog::col_oid_t(1),
+                                        NUM_ROWS_E, NUM_ROWS_E / 2.0, 0.0, {3, 4, 5}, {2, 2, 2}, {1.0, 5.0}, true);
 
-    ExecuteSQL("CREATE TABLE foo (col1 INT, col2 INT, col3 INT);", network::QueryType::QUERY_CREATE_TABLE);
-    ExecuteSQL("CREATE TABLE bar (col1 INT, col2 INT, col3 INT);", network::QueryType::QUERY_CREATE_TABLE);
-    ExecuteSQL("CREATE INDEX foo_idx ON foo (col2);", network::QueryType::QUERY_CREATE_INDEX);
-    ExecuteSQL("CREATE INDEX bar_idx ON bar (col1, col2, col3);", network::QueryType::QUERY_CREATE_INDEX);
+    ////// TABLES //////
+    \
+    // table 1
+    table_stats_obj_a_ =
+        TableStats(catalog::db_oid_t(1), catalog::table_oid_t(1), NUM_ROWS_A, true, {column_stats_obj_a_1_});
+    // table 2
+    table_stats_obj_b_ =
+        TableStats(catalog::db_oid_t(1), catalog::table_oid_t(2), NUM_ROWS_B, true, {column_stats_obj_b_1_});
+    // table 3
+    table_stats_obj_c_ =
+        TableStats(catalog::db_oid_t(1), catalog::table_oid_t(3), NUM_ROWS_C, true, {column_stats_obj_c_1_});
+    // table 4
+    table_stats_obj_d_ =
+        TableStats(catalog::db_oid_t(1), catalog::table_oid_t(4), NUM_ROWS_D, true, {column_stats_obj_d_1_});
+    // table 5
+    table_stats_obj_e_ =
+        TableStats(catalog::db_oid_t(1), catalog::table_oid_t(5), NUM_ROWS_E, true, {column_stats_obj_e_1_});
 
-    for (int i = 1; i <= 3; i++)
-      for (int j = 11; j <= 13; j++)
-        for (int z = 31; z <= 33; z++) {
-          std::stringstream query;
-          query << "INSERT INTO foo VALUES (";
-          query << i << "," << j << "," << z << ")";
-          ExecuteSQL(query.str(), network::QueryType::QUERY_INSERT);
-        }
+    stats_storage_ = StatsStorage();
+    stats_storage_.InsertTableStats(catalog::db_oid_t(1), catalog::table_oid_t(1), std::move(table_stats_obj_a_));
+    stats_storage_.InsertTableStats(catalog::db_oid_t(1), catalog::table_oid_t(2), std::move(table_stats_obj_b_));
+    stats_storage_.InsertTableStats(catalog::db_oid_t(1), catalog::table_oid_t(3), std::move(table_stats_obj_c_));
+    stats_storage_.InsertTableStats(catalog::db_oid_t(1), catalog::table_oid_t(4), std::move(table_stats_obj_d_));
+    stats_storage_.InsertTableStats(catalog::db_oid_t(1), catalog::table_oid_t(5), std::move(table_stats_obj_e_));
 
-    for (int i = 1; i <= 3; i++)
-      for (int j = 11; j <= 13; j++)
-        for (int z = 301; z <= 303; z++) {
-          std::stringstream query;
-          query << "INSERT INTO bar VALUES (";
-          query << i << "," << j << "," << z << ")";
-          ExecuteSQL(query.str(), network::QueryType::QUERY_INSERT);
-        }
+    cost_model_ = CostModel();
+    cost_model_.SetStatsStorage(&stats_storage_);
   }
-
-  void TearDown() override { TerrierTest::TearDown(); }
-
-  network::ConnectionContext context_;
-  common::ManagedPointer<catalog::Catalog> catalog_;
-  common::ManagedPointer<transaction::TransactionManager> txn_manager_;
-  common::ManagedPointer<trafficcop::TrafficCop> tcop_;
-  std::unique_ptr<DBMain> db_main_;
-  catalog::db_oid_t db_oid_;
 };
 
 // NOLINTNEXTLINE
-TEST_F(IdxJoinTest, SimpleIdxJoinTest) {
-  auto sql =
-      "SELECT foo.col1, foo.col2, foo.col3, bar.col1, bar.col2, bar.col3 "
-      "FROM foo, bar WHERE foo.col1 = bar.col1 "
-      "ORDER BY foo.col1, bar.col1, foo.col2, bar.col2, foo.col3, bar.col3";
+TEST_F(CostModelTests, InnerNLJoinCorrectnessTest) {
+  OptimizerContext context_ = OptimizerContext(common::ManagedPointer<AbstractCostModel>(&cost_model_));
+  context_.SetStatsStorage(&stats_storage_);
+  // create child gexprs
+  auto seq_scan_1 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(1),
+                                  std::vector<AnnotatedExpression>(), "table", false);
+  auto seq_scan_2 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(2),
+                                  std::vector<AnnotatedExpression>(), "table", false);
 
-  auto txn = txn_manager_->BeginTransaction();
-  auto stmt_list = parser::PostgresParser::BuildParseTree(sql);
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_larger_outer = {};
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
 
-  auto accessor = catalog_->GetAccessor(common::ManagedPointer(txn), db_oid_, DISABLED);
-  auto binder = binder::BindNodeVisitor(common::ManagedPointer(accessor), db_oid_);
-  binder.BindNameToNode(common::ManagedPointer(stmt_list), nullptr, nullptr);
+  Operator inner_nl_join_a_first = InnerNLJoin::Make(std::vector<AnnotatedExpression>());
+  OperatorNode operator_expression_a_first = OperatorNode(inner_nl_join_a_first, std::move(children_larger_outer), nullptr);
+  auto gexpr_inner_nl_join =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_first));
+  context_.GetMemo().InsertExpression(gexpr_inner_nl_join, false);
+  auto left_group = context_.GetMemo().GetGroupByID(group_id_t(0));
+  auto right_group = context_.GetMemo().GetGroupByID(group_id_t(1));
+  auto curr_group = context_.GetMemo().GetGroupByID(group_id_t(2));
+  left_group->SetNumRows(table_stats_obj_a_.GetNumRows());
+  right_group->SetNumRows(table_stats_obj_b_.GetNumRows());
+  curr_group->SetNumRows(1000);
+  auto left_gexpr = left_group->GetPhysicalExpressions()[0];
+  auto right_gexpr = right_group->GetPhysicalExpressions()[0];
+  auto prop_set = new PropertySet();
+  left_group->SetExpressionCost(left_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), left_gexpr),
+                                prop_set);
+  right_group->SetExpressionCost(right_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), right_gexpr),
+                                 prop_set);
+  auto cost_larger_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join);
 
-  auto cost_model = std::make_unique<optimizer::TrivialCostModel>();
-  auto out_plan = trafficcop::TrafficCopUtil::Optimize(
-      common::ManagedPointer(txn), common::ManagedPointer(accessor), common::ManagedPointer(stmt_list), db_oid_,
-      db_main_->GetStatsStorage(), std::move(cost_model), optimizer_timeout_);
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_smaller_outer = {};
+  children_smaller_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+  children_smaller_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
 
-  EXPECT_EQ(out_plan->GetPlanNodeType(), planner::PlanNodeType::PROJECTION);
-  EXPECT_EQ(out_plan->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::ORDERBY);
-  EXPECT_EQ(out_plan->GetChild(0)->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::INDEXNLJOIN);
-  auto idx_join = reinterpret_cast<const planner::IndexJoinPlanNode *>(out_plan->GetChild(0)->GetChild(0));
-  EXPECT_EQ(idx_join->GetHiIndexColumns().size(), 1);
+  Operator inner_nl_join_a_second = InnerNLJoin::Make(std::vector<AnnotatedExpression>());
+  OperatorNode operator_expression_a_second = OperatorNode(inner_nl_join_a_second, std::move(children_smaller_outer), nullptr);
+  auto gexpr_inner_nl_join_2 =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_second));
+  context_.GetMemo().InsertExpression(gexpr_inner_nl_join_2, false);
+  auto curr_group_2 = context_.GetMemo().GetGroupByID(group_id_t(3));
+  curr_group_2->SetNumRows(1000);
+  auto cost_smaller_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join_2);
 
-  EXPECT_EQ(out_plan->GetChild(0)->GetChild(0)->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::SEQSCAN);
-
-  uint32_t num_output_rows{0};
-  uint32_t num_expected_rows = 243;
-  execution::compiler::RowChecker row_checker = [&num_output_rows](const std::vector<execution::sql::Val *> &vals) {
-    num_output_rows++;
-
-    // Read cols
-    auto foo_col1 = static_cast<execution::sql::Integer *>(vals[0]);
-    auto foo_col2 = static_cast<execution::sql::Integer *>(vals[1]);
-    auto foo_col3 = static_cast<execution::sql::Integer *>(vals[2]);
-    auto bar_col1 = static_cast<execution::sql::Integer *>(vals[3]);
-    auto bar_col2 = static_cast<execution::sql::Integer *>(vals[4]);
-    auto bar_col3 = static_cast<execution::sql::Integer *>(vals[5]);
-    ASSERT_FALSE(foo_col1->is_null_ || foo_col2->is_null_ || foo_col3->is_null_ || bar_col1->is_null_ ||
-                 bar_col2->is_null_ || bar_col3->is_null_);
-
-    ASSERT_EQ(foo_col1->val_, 1 + ((num_output_rows - 1) / 81));
-    ASSERT_EQ(foo_col1->val_, bar_col1->val_);
-
-    ASSERT_GE(foo_col2->val_, 11);
-    ASSERT_GE(bar_col2->val_, 11);
-    ASSERT_LE(foo_col2->val_, 13);
-    ASSERT_LE(bar_col2->val_, 13);
-
-    ASSERT_GE(foo_col3->val_, 31);
-    ASSERT_LE(foo_col3->val_, 33);
-    ASSERT_GE(bar_col3->val_, 301);
-    ASSERT_LE(bar_col3->val_, 303);
-  };
-
-  execution::compiler::CorrectnessFn correcteness_fn = [&num_output_rows, num_expected_rows]() {
-    ASSERT_EQ(num_output_rows, num_expected_rows);
-  };
-  execution::compiler::GenericChecker checker(row_checker, correcteness_fn);
-
-  // Make Exec Ctx
-  execution::compiler::OutputStore store{&checker, out_plan->GetOutputSchema().Get()};
-  execution::exec::OutputPrinter printer(out_plan->GetOutputSchema().Get());
-  execution::compiler::MultiOutputCallback callback{std::vector<execution::exec::OutputCallback>{store, printer}};
-  auto exec_ctx = std::make_unique<execution::exec::ExecutionContext>(
-      db_oid_, common::ManagedPointer(txn), std::move(callback), out_plan->GetOutputSchema().Get(),
-      common::ManagedPointer(accessor));
-
-  // Run & Check
-  auto executable = execution::ExecutableQuery(common::ManagedPointer(out_plan), common::ManagedPointer(exec_ctx));
-  executable.Run(common::ManagedPointer(exec_ctx), execution::vm::ExecutionMode::Interpret);
-  checker.CheckCorrectness();
-
-  // Pipeline Units
-  auto pipeline = executable.GetPipelineOperatingUnits();
-  EXPECT_EQ(pipeline->units_.size(), 2);
-
-  bool build_feature = false, seq_feature = false, idx_feature = false;
-  auto pipe0_vec = pipeline->GetPipelineFeatures(execution::pipeline_id_t(0));
-  for (auto &feature : pipe0_vec) {
-    switch (feature.GetExecutionOperatingUnitType()) {
-      case brain::ExecutionOperatingUnitType::SORT_BUILD:
-        build_feature = true;
-        break;
-      case brain::ExecutionOperatingUnitType::SEQ_SCAN:
-        seq_feature = true;
-        break;
-      case brain::ExecutionOperatingUnitType::IDX_SCAN:
-        idx_feature = true;
-        break;
-      default:
-        break;
-    }
-  }
-
-  EXPECT_TRUE(build_feature && seq_feature && idx_feature);
-
-  bool iterate_feature = false;
-  auto pipe1_vec = pipeline->GetPipelineFeatures(execution::pipeline_id_t(1));
-  for (auto &feature : pipe1_vec) {
-    switch (feature.GetExecutionOperatingUnitType()) {
-      case brain::ExecutionOperatingUnitType::SORT_ITERATE:
-        iterate_feature = true;
-        break;
-      default:
-        break;
-    }
-  }
-  EXPECT_TRUE(iterate_feature);
-
-  txn_manager_->Commit(txn, transaction::TransactionUtil::EmptyCallback, nullptr);
+  EXPECT_EQ(cost_smaller_outer, cost_larger_outer);
+  delete prop_set;
 }
 
-// NOLINTNEXTLINE
-TEST_F(IdxJoinTest, MultiPredicateJoin) {
-  auto sql =
-      "SELECT foo.col1, foo.col2, foo.col3, bar.col1, bar.col2, bar.col3 "
-      "FROM foo, bar WHERE foo.col1 = bar.col1 and foo.col2 = bar.col2 "
-      "ORDER BY foo.col1, bar.col1, foo.col2, bar.col2, foo.col3, bar.col3";
-
-  auto txn = txn_manager_->BeginTransaction();
-  auto stmt_list = parser::PostgresParser::BuildParseTree(sql);
-
-  auto accessor = catalog_->GetAccessor(common::ManagedPointer(txn), db_oid_, DISABLED);
-  auto binder = binder::BindNodeVisitor(common::ManagedPointer(accessor), db_oid_);
-  binder.BindNameToNode(common::ManagedPointer(stmt_list), nullptr, nullptr);
-
-  auto cost_model = std::make_unique<optimizer::TrivialCostModel>();
-  auto out_plan = trafficcop::TrafficCopUtil::Optimize(
-      common::ManagedPointer(txn), common::ManagedPointer(accessor), common::ManagedPointer(stmt_list), db_oid_,
-      db_main_->GetStatsStorage(), std::move(cost_model), optimizer_timeout_);
-
-  EXPECT_EQ(out_plan->GetPlanNodeType(), planner::PlanNodeType::PROJECTION);
-  EXPECT_EQ(out_plan->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::ORDERBY);
-  EXPECT_EQ(out_plan->GetChild(0)->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::INDEXNLJOIN);
-  auto idx_join = reinterpret_cast<const planner::IndexJoinPlanNode *>(out_plan->GetChild(0)->GetChild(0));
-  EXPECT_EQ(idx_join->GetHiIndexColumns().size(), 2);
-
-  EXPECT_EQ(out_plan->GetChild(0)->GetChild(0)->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::SEQSCAN);
-
-  uint32_t num_output_rows{0};
-  uint32_t num_expected_rows = 81;
-  execution::compiler::RowChecker row_checker = [&num_output_rows](const std::vector<execution::sql::Val *> &vals) {
-    num_output_rows++;
-
-    // Read cols
-    auto foo_col1 = static_cast<execution::sql::Integer *>(vals[0]);
-    auto foo_col2 = static_cast<execution::sql::Integer *>(vals[1]);
-    auto foo_col3 = static_cast<execution::sql::Integer *>(vals[2]);
-    auto bar_col1 = static_cast<execution::sql::Integer *>(vals[3]);
-    auto bar_col2 = static_cast<execution::sql::Integer *>(vals[4]);
-    auto bar_col3 = static_cast<execution::sql::Integer *>(vals[5]);
-    ASSERT_FALSE(foo_col1->is_null_ || foo_col2->is_null_ || foo_col3->is_null_ || bar_col1->is_null_ ||
-                 bar_col2->is_null_ || bar_col3->is_null_);
-
-    ASSERT_EQ(foo_col1->val_, 1 + ((num_output_rows - 1) / 27));
-    ASSERT_EQ(foo_col1->val_, bar_col1->val_);
-
-    ASSERT_EQ(foo_col2->val_, bar_col2->val_);
-    ASSERT_GE(foo_col2->val_, 11);
-    ASSERT_GE(bar_col2->val_, 11);
-    ASSERT_LE(foo_col2->val_, 13);
-    ASSERT_LE(bar_col2->val_, 13);
-
-    ASSERT_GE(foo_col3->val_, 31);
-    ASSERT_LE(foo_col3->val_, 33);
-    ASSERT_GE(bar_col3->val_, 301);
-    ASSERT_LE(bar_col3->val_, 303);
-  };
-
-  execution::compiler::CorrectnessFn correcteness_fn = [&num_output_rows, num_expected_rows]() {
-    ASSERT_EQ(num_output_rows, num_expected_rows);
-  };
-  execution::compiler::GenericChecker checker(row_checker, correcteness_fn);
-
-  // Make Exec Ctx
-  execution::compiler::OutputStore store{&checker, out_plan->GetOutputSchema().Get()};
-  execution::exec::OutputPrinter printer(out_plan->GetOutputSchema().Get());
-  execution::compiler::MultiOutputCallback callback{std::vector<execution::exec::OutputCallback>{store, printer}};
-  auto exec_ctx = std::make_unique<execution::exec::ExecutionContext>(
-      db_oid_, common::ManagedPointer(txn), std::move(callback), out_plan->GetOutputSchema().Get(),
-      common::ManagedPointer(accessor));
-
-  // Run & Check
-  auto executable = execution::ExecutableQuery(common::ManagedPointer(out_plan), common::ManagedPointer(exec_ctx));
-  executable.Run(common::ManagedPointer(exec_ctx), execution::vm::ExecutionMode::Interpret);
-  checker.CheckCorrectness();
-
-  txn_manager_->Commit(txn, transaction::TransactionUtil::EmptyCallback, nullptr);
-}
-
-// NOLINTNEXTLINE
-TEST_F(IdxJoinTest, MultiPredicateJoinWithExtra) {
-  auto sql =
-      "SELECT foo.col1, foo.col2, foo.col3, bar.col1, bar.col2, bar.col3 "
-      "FROM foo, bar WHERE foo.col1 = bar.col1 and foo.col2 = bar.col2 and bar.col3 = 301 "
-      "ORDER BY foo.col1, bar.col1, foo.col2, bar.col2, foo.col3, bar.col3";
-
-  auto txn = txn_manager_->BeginTransaction();
-  auto stmt_list = parser::PostgresParser::BuildParseTree(sql);
-
-  auto accessor = catalog_->GetAccessor(common::ManagedPointer(txn), db_oid_, DISABLED);
-  auto binder = binder::BindNodeVisitor(common::ManagedPointer(accessor), db_oid_);
-  binder.BindNameToNode(common::ManagedPointer(stmt_list), nullptr, nullptr);
-
-  auto cost_model = std::make_unique<optimizer::TrivialCostModel>();
-  auto out_plan = trafficcop::TrafficCopUtil::Optimize(
-      common::ManagedPointer(txn), common::ManagedPointer(accessor), common::ManagedPointer(stmt_list), db_oid_,
-      db_main_->GetStatsStorage(), std::move(cost_model), optimizer_timeout_);
-
-  EXPECT_EQ(out_plan->GetPlanNodeType(), planner::PlanNodeType::PROJECTION);
-  EXPECT_EQ(out_plan->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::ORDERBY);
-  EXPECT_EQ(out_plan->GetChild(0)->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::INDEXNLJOIN);
-  auto idx_join = reinterpret_cast<const planner::IndexJoinPlanNode *>(out_plan->GetChild(0)->GetChild(0));
-  EXPECT_EQ(idx_join->GetHiIndexColumns().size(), 3);
-
-  EXPECT_EQ(out_plan->GetChild(0)->GetChild(0)->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::SEQSCAN);
-
-  uint32_t num_output_rows{0};
-  uint32_t num_expected_rows = 27;
-  execution::compiler::RowChecker row_checker = [&num_output_rows](const std::vector<execution::sql::Val *> &vals) {
-    num_output_rows++;
-
-    // Read cols
-    auto foo_col1 = static_cast<execution::sql::Integer *>(vals[0]);
-    auto foo_col2 = static_cast<execution::sql::Integer *>(vals[1]);
-    auto foo_col3 = static_cast<execution::sql::Integer *>(vals[2]);
-    auto bar_col1 = static_cast<execution::sql::Integer *>(vals[3]);
-    auto bar_col2 = static_cast<execution::sql::Integer *>(vals[4]);
-    auto bar_col3 = static_cast<execution::sql::Integer *>(vals[5]);
-    ASSERT_FALSE(foo_col1->is_null_ || foo_col2->is_null_ || foo_col3->is_null_ || bar_col1->is_null_ ||
-                 bar_col2->is_null_ || bar_col3->is_null_);
-
-    ASSERT_EQ(foo_col1->val_, 1 + ((num_output_rows - 1) / 9));
-    ASSERT_EQ(foo_col1->val_, bar_col1->val_);
-
-    ASSERT_EQ(foo_col2->val_, bar_col2->val_);
-    ASSERT_GE(foo_col2->val_, 11);
-    ASSERT_GE(bar_col2->val_, 11);
-    ASSERT_LE(foo_col2->val_, 13);
-    ASSERT_LE(bar_col2->val_, 13);
-
-    ASSERT_GE(foo_col3->val_, 31);
-    ASSERT_LE(foo_col3->val_, 33);
-    ASSERT_EQ(bar_col3->val_, 301);
-  };
-
-  execution::compiler::CorrectnessFn correcteness_fn = [&num_output_rows, num_expected_rows]() {
-    ASSERT_EQ(num_output_rows, num_expected_rows);
-  };
-  execution::compiler::GenericChecker checker(row_checker, correcteness_fn);
-
-  // Make Exec Ctx
-  execution::compiler::OutputStore store{&checker, out_plan->GetOutputSchema().Get()};
-  execution::exec::OutputPrinter printer(out_plan->GetOutputSchema().Get());
-  execution::compiler::MultiOutputCallback callback{std::vector<execution::exec::OutputCallback>{store, printer}};
-  auto exec_ctx = std::make_unique<execution::exec::ExecutionContext>(
-      db_oid_, common::ManagedPointer(txn), std::move(callback), out_plan->GetOutputSchema().Get(),
-      common::ManagedPointer(accessor));
-
-  // Run & Check
-  auto executable = execution::ExecutableQuery(common::ManagedPointer(out_plan), common::ManagedPointer(exec_ctx));
-  executable.Run(common::ManagedPointer(exec_ctx), execution::vm::ExecutionMode::Interpret);
-  checker.CheckCorrectness();
-
-  txn_manager_->Commit(txn, transaction::TransactionUtil::EmptyCallback, nullptr);
-}
-
-// NOLINTNEXTLINE
-TEST_F(IdxJoinTest, FooOnlyScan) {
-  auto sql =
-      "SELECT foo.col1, foo.col2, foo.col3 "
-      "FROM foo, bar WHERE foo.col1 = bar.col1 and foo.col2 = bar.col2 "
-      "ORDER BY foo.col1, foo.col2, foo.col3";
-
-  auto txn = txn_manager_->BeginTransaction();
-  auto stmt_list = parser::PostgresParser::BuildParseTree(sql);
-
-  auto accessor = catalog_->GetAccessor(common::ManagedPointer(txn), db_oid_, DISABLED);
-  auto binder = binder::BindNodeVisitor(common::ManagedPointer(accessor), db_oid_);
-  binder.BindNameToNode(common::ManagedPointer(stmt_list), nullptr, nullptr);
-
-  auto cost_model = std::make_unique<optimizer::TrivialCostModel>();
-  auto out_plan = trafficcop::TrafficCopUtil::Optimize(
-      common::ManagedPointer(txn), common::ManagedPointer(accessor), common::ManagedPointer(stmt_list), db_oid_,
-      db_main_->GetStatsStorage(), std::move(cost_model), optimizer_timeout_);
-
-  EXPECT_EQ(out_plan->GetPlanNodeType(), planner::PlanNodeType::PROJECTION);
-  EXPECT_EQ(out_plan->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::ORDERBY);
-  EXPECT_EQ(out_plan->GetChild(0)->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::INDEXNLJOIN);
-  EXPECT_EQ(out_plan->GetChild(0)->GetChild(0)->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::SEQSCAN);
-
-  uint32_t num_output_rows{0};
-  uint32_t num_expected_rows = 81;
-  execution::compiler::RowChecker row_checker = [&num_output_rows](const std::vector<execution::sql::Val *> &vals) {
-    num_output_rows++;
-
-    // Read cols
-    auto foo_col1 = static_cast<execution::sql::Integer *>(vals[0]);
-    auto foo_col2 = static_cast<execution::sql::Integer *>(vals[1]);
-    auto foo_col3 = static_cast<execution::sql::Integer *>(vals[2]);
-    ASSERT_FALSE(foo_col1->is_null_ || foo_col2->is_null_ || foo_col3->is_null_);
-
-    ASSERT_EQ(foo_col1->val_, 1 + ((num_output_rows - 1) / 27));
-    ASSERT_GE(foo_col2->val_, 11);
-    ASSERT_LE(foo_col2->val_, 13);
-    ASSERT_GE(foo_col3->val_, 31);
-    ASSERT_LE(foo_col3->val_, 33);
-  };
-
-  execution::compiler::CorrectnessFn correcteness_fn = [&num_output_rows, num_expected_rows]() {
-    ASSERT_EQ(num_output_rows, num_expected_rows);
-  };
-  execution::compiler::GenericChecker checker(row_checker, correcteness_fn);
-
-  // Make Exec Ctx
-  execution::compiler::OutputStore store{&checker, out_plan->GetOutputSchema().Get()};
-  execution::exec::OutputPrinter printer(out_plan->GetOutputSchema().Get());
-  execution::compiler::MultiOutputCallback callback{std::vector<execution::exec::OutputCallback>{store, printer}};
-  auto exec_ctx = std::make_unique<execution::exec::ExecutionContext>(
-      db_oid_, common::ManagedPointer(txn), std::move(callback), out_plan->GetOutputSchema().Get(),
-      common::ManagedPointer(accessor));
-
-  // Run & Check
-  auto executable = execution::ExecutableQuery(common::ManagedPointer(out_plan), common::ManagedPointer(exec_ctx));
-  executable.Run(common::ManagedPointer(exec_ctx), execution::vm::ExecutionMode::Interpret);
-  checker.CheckCorrectness();
-
-  txn_manager_->Commit(txn, transaction::TransactionUtil::EmptyCallback, nullptr);
-}
-
-// NOLINTNEXTLINE
-TEST_F(IdxJoinTest, BarOnlyScan) {
-  auto sql =
-      "SELECT bar.col1, bar.col2, bar.col3 "
-      "FROM foo, bar WHERE foo.col1 = bar.col1 and foo.col2 = bar.col2 "
-      "ORDER BY bar.col1, bar.col2, bar.col3";
-
-  auto txn = txn_manager_->BeginTransaction();
-  auto stmt_list = parser::PostgresParser::BuildParseTree(sql);
-
-  auto accessor = catalog_->GetAccessor(common::ManagedPointer(txn), db_oid_, DISABLED);
-  auto binder = binder::BindNodeVisitor(common::ManagedPointer(accessor), db_oid_);
-  binder.BindNameToNode(common::ManagedPointer(stmt_list), nullptr, nullptr);
-
-  auto cost_model = std::make_unique<optimizer::TrivialCostModel>();
-  auto out_plan = trafficcop::TrafficCopUtil::Optimize(
-      common::ManagedPointer(txn), common::ManagedPointer(accessor), common::ManagedPointer(stmt_list), db_oid_,
-      db_main_->GetStatsStorage(), std::move(cost_model), optimizer_timeout_);
-
-  EXPECT_EQ(out_plan->GetPlanNodeType(), planner::PlanNodeType::PROJECTION);
-  EXPECT_EQ(out_plan->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::ORDERBY);
-  EXPECT_EQ(out_plan->GetChild(0)->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::INDEXNLJOIN);
-  EXPECT_EQ(out_plan->GetChild(0)->GetChild(0)->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::SEQSCAN);
-
-  uint32_t num_output_rows{0};
-  uint32_t num_expected_rows = 81;
-  execution::compiler::RowChecker row_checker = [&num_output_rows](const std::vector<execution::sql::Val *> &vals) {
-    num_output_rows++;
-
-    // Read cols
-    auto bar_col1 = static_cast<execution::sql::Integer *>(vals[0]);
-    auto bar_col2 = static_cast<execution::sql::Integer *>(vals[1]);
-    auto bar_col3 = static_cast<execution::sql::Integer *>(vals[2]);
-    ASSERT_FALSE(bar_col1->is_null_ || bar_col2->is_null_ || bar_col3->is_null_);
-
-    ASSERT_EQ(bar_col1->val_, 1 + ((num_output_rows - 1) / 27));
-    ASSERT_GE(bar_col2->val_, 11);
-    ASSERT_LE(bar_col2->val_, 13);
-    ASSERT_GE(bar_col3->val_, 301);
-    ASSERT_LE(bar_col3->val_, 303);
-  };
-
-  execution::compiler::CorrectnessFn correcteness_fn = [&num_output_rows, num_expected_rows]() {
-    ASSERT_EQ(num_output_rows, num_expected_rows);
-  };
-  execution::compiler::GenericChecker checker(row_checker, correcteness_fn);
-
-  // Make Exec Ctx
-  execution::compiler::OutputStore store{&checker, out_plan->GetOutputSchema().Get()};
-  execution::exec::OutputPrinter printer(out_plan->GetOutputSchema().Get());
-  execution::compiler::MultiOutputCallback callback{std::vector<execution::exec::OutputCallback>{store, printer}};
-  auto exec_ctx = std::make_unique<execution::exec::ExecutionContext>(
-      db_oid_, common::ManagedPointer(txn), std::move(callback), out_plan->GetOutputSchema().Get(),
-      common::ManagedPointer(accessor));
-
-  // Run & Check
-  auto executable = execution::ExecutableQuery(common::ManagedPointer(out_plan), common::ManagedPointer(exec_ctx));
-  executable.Run(common::ManagedPointer(exec_ctx), execution::vm::ExecutionMode::Interpret);
-  checker.CheckCorrectness();
-
-  txn_manager_->Commit(txn, transaction::TransactionUtil::EmptyCallback, nullptr);
-}
-
-// NOLINTNEXTLINE
-TEST_F(IdxJoinTest, IndexToIndexJoin) {
-  auto sql =
-      "SELECT foo.col1, foo.col2, foo.col3, bar.col1, bar.col2, bar.col3 "
-      "FROM foo, bar WHERE foo.col1 = bar.col1 and foo.col2 = bar.col2 and foo.col2 = 12 and bar.col3 = 302 "
-      "ORDER BY foo.col1, bar.col1, foo.col2, bar.col2, foo.col3, bar.col3";
-
-  auto txn = txn_manager_->BeginTransaction();
-  auto stmt_list = parser::PostgresParser::BuildParseTree(sql);
-
-  auto accessor = catalog_->GetAccessor(common::ManagedPointer(txn), db_oid_, DISABLED);
-  auto binder = binder::BindNodeVisitor(common::ManagedPointer(accessor), db_oid_);
-  binder.BindNameToNode(common::ManagedPointer(stmt_list), nullptr, nullptr);
-
-  auto cost_model = std::make_unique<optimizer::TrivialCostModel>();
-  auto out_plan = trafficcop::TrafficCopUtil::Optimize(
-      common::ManagedPointer(txn), common::ManagedPointer(accessor), common::ManagedPointer(stmt_list), db_oid_,
-      db_main_->GetStatsStorage(), std::move(cost_model), optimizer_timeout_);
-
-  EXPECT_EQ(out_plan->GetPlanNodeType(), planner::PlanNodeType::PROJECTION);
-  EXPECT_EQ(out_plan->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::ORDERBY);
-  EXPECT_EQ(out_plan->GetChild(0)->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::INDEXNLJOIN);
-  auto idx_join = reinterpret_cast<const planner::IndexJoinPlanNode *>(out_plan->GetChild(0)->GetChild(0));
-  EXPECT_EQ(idx_join->GetHiIndexColumns().size(), 3);
-
-  EXPECT_EQ(out_plan->GetChild(0)->GetChild(0)->GetChild(0)->GetPlanNodeType(), planner::PlanNodeType::INDEXSCAN);
-  auto idx_scan = reinterpret_cast<const planner::IndexScanPlanNode *>(idx_join->GetChild(0));
-  EXPECT_EQ(idx_scan->GetLoIndexColumns().size(), 1);
-
-  uint32_t num_output_rows{0};
-  uint32_t num_expected_rows = 9;
-  execution::compiler::RowChecker row_checker = [&num_output_rows](const std::vector<execution::sql::Val *> &vals) {
-    num_output_rows++;
-
-    // Read cols
-    auto foo_col1 = static_cast<execution::sql::Integer *>(vals[0]);
-    auto foo_col2 = static_cast<execution::sql::Integer *>(vals[1]);
-    auto foo_col3 = static_cast<execution::sql::Integer *>(vals[2]);
-    auto bar_col1 = static_cast<execution::sql::Integer *>(vals[3]);
-    auto bar_col2 = static_cast<execution::sql::Integer *>(vals[4]);
-    auto bar_col3 = static_cast<execution::sql::Integer *>(vals[5]);
-    ASSERT_FALSE(foo_col1->is_null_ || foo_col2->is_null_ || foo_col3->is_null_ || bar_col1->is_null_ ||
-                 bar_col2->is_null_ || bar_col3->is_null_);
-
-    ASSERT_EQ(foo_col1->val_, 1 + ((num_output_rows - 1) / 3));
-    ASSERT_EQ(foo_col1->val_, bar_col1->val_);
-
-    ASSERT_EQ(foo_col2->val_, 12);
-    ASSERT_EQ(bar_col2->val_, 12);
-
-    ASSERT_GE(foo_col3->val_, 31);
-    ASSERT_LE(foo_col3->val_, 33);
-    ASSERT_EQ(bar_col3->val_, 302);
-  };
-
-  execution::compiler::CorrectnessFn correcteness_fn = [&num_output_rows, num_expected_rows]() {
-    ASSERT_EQ(num_output_rows, num_expected_rows);
-  };
-  execution::compiler::GenericChecker checker(row_checker, correcteness_fn);
-
-  // Make Exec Ctx
-  execution::compiler::OutputStore store{&checker, out_plan->GetOutputSchema().Get()};
-  execution::exec::OutputPrinter printer(out_plan->GetOutputSchema().Get());
-  execution::compiler::MultiOutputCallback callback{std::vector<execution::exec::OutputCallback>{store, printer}};
-  auto exec_ctx = std::make_unique<execution::exec::ExecutionContext>(
-      db_oid_, common::ManagedPointer(txn), std::move(callback), out_plan->GetOutputSchema().Get(),
-      common::ManagedPointer(accessor));
-
-  // Run & Check
-  auto executable = execution::ExecutableQuery(common::ManagedPointer(out_plan), common::ManagedPointer(exec_ctx));
-  executable.Run(common::ManagedPointer(exec_ctx), execution::vm::ExecutionMode::Interpret);
-  checker.CheckCorrectness();
-
-  txn_manager_->Commit(txn, transaction::TransactionUtil::EmptyCallback, nullptr);
+TEST_F(CostModelTests, HashJoinCorrectnessTest) {
+  OptimizerContext context_ = OptimizerContext(common::ManagedPointer<AbstractCostModel>(&cost_model_));
+  context_.SetStatsStorage(&stats_storage_);
+  // create child gexprs
+  auto seq_scan_1 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(1),
+                                  std::vector<AnnotatedExpression>(), "table", false);
+  auto seq_scan_2 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(2),
+                                  std::vector<AnnotatedExpression>(), "table", false);
+
+  execution::compiler::ExpressionMaker expr_maker;
+  // Get Table columns
+  auto col1 = expr_maker.MakeManaged(std::make_unique<parser::ColumnValueExpression>(
+      catalog::db_oid_t(1), catalog::table_oid_t(1), catalog::col_oid_t(1)));
+  auto col2 = expr_maker.MakeManaged(std::make_unique<parser::ColumnValueExpression>(
+      catalog::db_oid_t(1), catalog::table_oid_t(2), catalog::col_oid_t(1)));
+
+  // Make predicate: x.col1 == y.col1
+  auto predicate = expr_maker.ComparisonEq(col1, col2);
+  AnnotatedExpression ann_predicate = AnnotatedExpression(predicate, std::unordered_set<std::string>());
+
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_larger_outer = {};
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+
+  // make first inner hash join
+
+  Operator inner_hash_join_a_first =
+      InnerHashJoin::Make(std::vector<AnnotatedExpression>{ann_predicate},
+                          std::vector<common::ManagedPointer<parser::AbstractExpression>>{
+                              common::ManagedPointer<parser::AbstractExpression>(col1.Get())},
+                          std::vector<common::ManagedPointer<parser::AbstractExpression>>{
+                              common::ManagedPointer<parser::AbstractExpression>(col2.Get())});
+  OperatorNode operator_expression_a_first = OperatorNode(inner_hash_join_a_first, std::move(children_larger_outer), nullptr);
+  auto gexpr_inner_hash_join =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_first));
+
+  context_.GetMemo().InsertExpression(gexpr_inner_hash_join, false);
+  auto left_group = context_.GetMemo().GetGroupByID(group_id_t(0));
+  auto right_group = context_.GetMemo().GetGroupByID(group_id_t(1));
+  auto curr_group = context_.GetMemo().GetGroupByID(group_id_t(2));
+  left_group->SetNumRows(table_stats_obj_a_.GetNumRows());
+  right_group->SetNumRows(table_stats_obj_b_.GetNumRows());
+  curr_group->SetNumRows(1000);
+
+  auto left_gexpr = left_group->GetPhysicalExpressions()[0];
+  auto right_gexpr = right_group->GetPhysicalExpressions()[0];
+  auto prop_set = new PropertySet();
+
+  left_group->SetExpressionCost(left_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), left_gexpr),
+                                prop_set);
+  right_group->SetExpressionCost(right_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), right_gexpr),
+                                 prop_set);
+  auto hash_join_1_cost = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_hash_join);
+
+  EXPECT_EQ(hash_join_1_cost, 1002020);
+
+  delete prop_set;
 }
 
 }  // namespace terrier::optimizer
