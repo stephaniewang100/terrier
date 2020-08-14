@@ -96,6 +96,7 @@ class StatsStorage {
   bool DeleteTableStats(catalog::db_oid_t database_id, catalog::table_oid_t table_id);
 
  private:
+  friend class CostModelTests;
   /**
    * The following tests check to make sure the protected insert/delete functions work.
    */
