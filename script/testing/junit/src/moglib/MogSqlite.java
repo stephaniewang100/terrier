@@ -24,17 +24,17 @@ public class MogSqlite {
     private SqliteMode mode = SqliteMode.INVALID;
     private StringBuilder sb = new StringBuilder();
     public BufferedReader br;
-
     public String sql = "";
 
     /* Query records. */
-    private String typeString = "";
-    private String sortMode = "";
-    private String label = "";
+    public String typeString = "";
+    public String sortMode = "";
+    public String label = "";
     public ArrayList<String> queryResults = new ArrayList<>();
+    public String queryFirstLine;
+    public ArrayList<String> comments = new ArrayList<>();
     public int lineCounter = 0;
     public int lineNum;
-    public String status;
 
     public MogSqlite(File sqliteTestFile) throws FileNotFoundException {
         this.br = new BufferedReader(new FileReader(sqliteTestFile));
@@ -50,29 +50,30 @@ public class MogSqlite {
     public boolean next() throws IOException, RuntimeException {
         boolean readLine = false;
         String line;
-
         while (null != (line = br.readLine())) {
             readLine = true;
-            if (line.startsWith("#")) {
+            if (line.startsWith(Constants.HASHTAG)) {
                 /* Ignore comments. */
                 lineCounter++;
+                comments.add(line);
                 continue;
-            } else if (line.startsWith("halt")) {
+            } else if (line.startsWith(Constants.HALT)) {
                 /* Special debugging control record, ignore the rest of the test script. */
                 lineCounter++;
                 return false;
-            } else if (line.startsWith("hash-threshold")) {
+            } else if (line.startsWith(Constants.HASH_THRESHOLD)) {
                 /* Ignore hash-threshold control record. */
                 lineCounter++;
                 continue;
-            } else if (line.startsWith("statement ok") || line.startsWith("statement error")) {
+            } else if (line.startsWith(Constants.STATEMENT_OK) || line.startsWith(Constants.STATEMENT_ERROR)) {
                 /* Statement record. */
-                status = line.split(" ")[1];
+                queryFirstLine = line.trim();
                 lineCounter++;
                 readRecordStatement(line);
                 break;
-            } else if (line.startsWith("query")) {
+            }  else if (line.startsWith(Constants.QUERY)) {
                 /* Query record. */
+                queryFirstLine = line.trim();
                 lineNum = lineCounter;
                 readRecordQuery(line);
                 break;
@@ -295,9 +296,9 @@ public class MogSqlite {
      * @throws IOException If reading the file suddenly fails.
      */
     private void readRecordStatement(String line) throws IOException {
-        if (line.startsWith("statement ok")) {
+        if (line.startsWith(Constants.STATEMENT_OK)) {
             this.mode = SqliteMode.RECORD_STATEMENT_OK;
-        } else if (line.startsWith("statement error")) {
+        } else if (line.startsWith(Constants.STATEMENT_ERROR)) {
             this.mode = SqliteMode.RECORD_STATEMENT_ERROR;
         } else {
             assert (false);
@@ -307,7 +308,8 @@ public class MogSqlite {
             this.br.mark(RECORD_READAHEAD_LIMIT);
             line = this.br.readLine();
 
-            if (null == line || line.startsWith("query") || line.startsWith("statement ok") || line.startsWith("statement error")) {
+            if (null == line || line.startsWith(Constants.QUERY) || line.startsWith(Constants.STATEMENT_OK)
+                    || line.startsWith(Constants.STATEMENT_ERROR) ||line.startsWith(Constants.HASHTAG)) {
                 /* End of SQL query reached. */
                 this.br.reset();
                 this.sql = this.sb.toString();
@@ -328,8 +330,7 @@ public class MogSqlite {
      * @throws IOException If reading the file suddenly fails.
      */
     private void readRecordQuery(String line) throws IOException {
-        assert (line.startsWith("query"));
-        lineNum = lineCounter;
+        assert (line.startsWith(Constants.QUERY));
         this.mode = SqliteMode.RECORD_QUERY;
 
         /* Parse the query string arguments. */
@@ -353,9 +354,9 @@ public class MogSqlite {
             this.br.mark(RECORD_READAHEAD_LIMIT);
             line = this.br.readLine();
 
-            if (isNextRecord(line) || line.startsWith("----")) {
+            if (isNextRecord(line) || line.startsWith(Constants.SEPARATION)) {
                 /* End of SQL query reached. If it was not the query record terminator, go back one line. */
-                if (null == line || !line.startsWith("----")) {
+                if (null == line || !line.startsWith(Constants.SEPARATION)) {
                     this.br.reset();
                 }
                 this.sql = this.sb.toString();
@@ -389,9 +390,9 @@ public class MogSqlite {
 
     private boolean isNextRecord(String line) {
         return null == line
-                || line.startsWith("query")
-                || line.startsWith("statement ok")
-                || line.startsWith("statement error");
+                || line.startsWith(Constants.QUERY)
+                || line.startsWith(Constants.STATEMENT_OK)
+                || line.startsWith(Constants.STATEMENT_ERROR);
     }
 
 }
