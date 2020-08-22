@@ -91,7 +91,7 @@ class CostModelTests : public TerrierTest {
 
 // NOLINTNEXTLINE
 TEST_F(CostModelTests, InnerNLJoinCorrectnessTest) {
-  OptimizerContext context_ = OptimizerContext(common::ManagedPointer<AbstractCostModel>(&cost_model_));
+  OptimizerContext context_((common::ManagedPointer<AbstractCostModel>(&cost_model_)));
   context_.SetStatsStorage(&stats_storage_);
   // create child gexprs
   auto seq_scan_1 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(1),
@@ -141,7 +141,7 @@ TEST_F(CostModelTests, InnerNLJoinCorrectnessTest) {
 }
 
 TEST_F(CostModelTests, HashJoinCorrectnessTest) {
-  OptimizerContext context_ = OptimizerContext(common::ManagedPointer<AbstractCostModel>(&cost_model_));
+  OptimizerContext context_((common::ManagedPointer<AbstractCostModel>(&cost_model_)));
   context_.SetStatsStorage(&stats_storage_);
   // create child gexprs
   auto seq_scan_1 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(1),

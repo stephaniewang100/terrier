@@ -94,7 +94,7 @@ class CostModel : public AbstractCostModel {
    * Visit a InnerIndexJoin operator
    * @param op operator
    */
-  void Visit(const InnerIndexJoin *op) override;
+  void Visit(const InnerIndexJoin *op) override {}
 
   /**
    * Visit a InnerNLJoin operator
