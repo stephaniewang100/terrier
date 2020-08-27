@@ -116,11 +116,13 @@ TEST_F(CostModelTests, InnerNLJoinCorrectnessTest) {
   curr_group->SetNumRows(1000);
   auto left_gexpr = left_group->GetPhysicalExpressions()[0];
   auto right_gexpr = right_group->GetPhysicalExpressions()[0];
-  auto prop_set = new PropertySet();
+  auto left_prop_set = new PropertySet();
+  auto right_prop_set = new PropertySet();
+
   left_group->SetExpressionCost(left_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), left_gexpr),
-                                prop_set);
+                                left_prop_set);
   right_group->SetExpressionCost(right_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), right_gexpr),
-                                 prop_set);
+                                 right_prop_set);
   auto cost_larger_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join);
 
   std::vector<std::unique_ptr<AbstractOptimizerNode>> children_smaller_outer = {};
@@ -137,7 +139,6 @@ TEST_F(CostModelTests, InnerNLJoinCorrectnessTest) {
   auto cost_smaller_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join_2);
 
   EXPECT_EQ(cost_smaller_outer, cost_larger_outer);
-  delete prop_set;
 }
 
 TEST_F(CostModelTests, HashJoinCorrectnessTest) {
@@ -186,17 +187,16 @@ TEST_F(CostModelTests, HashJoinCorrectnessTest) {
 
   auto left_gexpr = left_group->GetPhysicalExpressions()[0];
   auto right_gexpr = right_group->GetPhysicalExpressions()[0];
-  auto prop_set = new PropertySet();
+  auto left_prop_set = new PropertySet();
+  auto right_prop_set = new PropertySet();
 
   left_group->SetExpressionCost(left_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), left_gexpr),
-                                prop_set);
+                                left_prop_set);
   right_group->SetExpressionCost(right_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), right_gexpr),
-                                 prop_set);
+                                 right_prop_set);
   auto hash_join_1_cost = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_hash_join);
 
   EXPECT_EQ(hash_join_1_cost, 1002020);
-
-  delete prop_set;
 }
 
 }  // namespace terrier::optimizer
