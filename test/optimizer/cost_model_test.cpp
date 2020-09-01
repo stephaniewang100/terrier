@@ -138,7 +138,7 @@ TEST_F(CostModelTests, InnerNLJoinCorrectnessTest) {
   curr_group_2->SetNumRows(1000);
   auto cost_smaller_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join_2);
 
-  EXPECT_EQ(cost_smaller_outer, cost_larger_outer);
+  EXPECT_GT(cost_smaller_outer, cost_larger_outer);
 }
 
 TEST_F(CostModelTests, HashJoinCorrectnessTest) {
@@ -194,9 +194,29 @@ TEST_F(CostModelTests, HashJoinCorrectnessTest) {
                                 left_prop_set);
   right_group->SetExpressionCost(right_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), right_gexpr),
                                  right_prop_set);
-  auto hash_join_1_cost = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_hash_join);
+  auto cost_larger_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_hash_join);
 
-  EXPECT_EQ(hash_join_1_cost, 1002020);
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_smaller_outer = {};
+  children_smaller_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+  children_smaller_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+
+  Operator inner_hash_join_a_second =
+      InnerHashJoin::Make(std::vector<AnnotatedExpression>{ann_predicate},
+                          std::vector<common::ManagedPointer<parser::AbstractExpression>>{
+                              common::ManagedPointer<parser::AbstractExpression>(col1.Get())},
+                          std::vector<common::ManagedPointer<parser::AbstractExpression>>{
+                              common::ManagedPointer<parser::AbstractExpression>(col2.Get())});
+  OperatorNode operator_expression_a_second = OperatorNode(inner_hash_join_a_second, std::move(children_smaller_outer), nullptr);
+  auto gexpr_inner_hash_join_2 =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_second));
+
+  context_.GetMemo().InsertExpression(gexpr_inner_hash_join_2, false);
+  auto curr_group_2 = context_.GetMemo().GetGroupByID(group_id_t(2));
+  curr_group_2->SetNumRows(1000);
+
+  auto cost_smaller_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_hash_join);
+
+  EXPECT_GE(cost_smaller_outer, cost_larger_outer);
 }
 
 }  // namespace terrier::optimizer
