@@ -269,12 +269,3 @@ SETTING_string(
     terrier::settings::Callbacks::NoOp
 )
 
-// Cost Model type
-SETTING_string(
-    cost_model_type,
-    "decides which cost model is used",
-    "trivial_cost_model.h",
-    true,
-    terrier::settings::Callbacks::NoOp
-)
-
