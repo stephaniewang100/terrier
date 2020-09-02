@@ -236,6 +236,15 @@ SETTING_bool(
     terrier::settings::Callbacks::NoOp
 )
 
+// Cost Model type
+SETTING_string(
+    cost_model_type,
+    "decides which cost model is used",
+    "trivial_cost_model.h",
+    true,
+    terrier::settings::Callbacks::NoOp
+)
+
 SETTING_bool(
     compiled_query_execution,
     "Compile queries to native machine code using LLVM, rather than relying on TPL interpretation (default: false).",
@@ -259,3 +268,4 @@ SETTING_string(
     true,
     terrier::settings::Callbacks::NoOp
 )
+
