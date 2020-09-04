@@ -3,7 +3,7 @@
 #include <vector>
 
 #include "optimizer/cost_model/cost_model.h"
-#include "execution/compiler/expression_util.h"
+#include "execution/compiler/expression_maker.h"
 #include "gtest/gtest.h"
 #include "optimizer/operator_node.h"
 #include "optimizer/optimizer_context.h"
@@ -150,7 +150,7 @@ TEST_F(CostModelTests, HashJoinCorrectnessTest) {
   auto seq_scan_2 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(2),
                                   std::vector<AnnotatedExpression>(), "table", false);
 
-  execution::compiler::ExpressionMaker expr_maker;
+  execution::compiler::test::ExpressionMaker expr_maker;
   // Get Table columns
   auto col1 = expr_maker.MakeManaged(std::make_unique<parser::ColumnValueExpression>(
       catalog::db_oid_t(1), catalog::table_oid_t(1), catalog::col_oid_t(1)));
