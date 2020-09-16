@@ -137,9 +137,11 @@ TEST_F(CostModelTests, InnerNLJoinCorrectnessTest) {
   auto curr_group_2 = context_.GetMemo().GetGroupByID(group_id_t(3));
   curr_group_2->SetNumRows(1000);
   auto cost_smaller_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join_2);
-
-  EXPECT_GT(cost_smaller_outer, cost_larger_outer);
+  //should be less than
+  EXPECT_LT(cost_smaller_outer, cost_larger_outer);
 }
+
+//same thing as inner NL join
 
 TEST_F(CostModelTests, HashJoinCorrectnessTest) {
   OptimizerContext context_((common::ManagedPointer<AbstractCostModel>(&cost_model_)));
@@ -150,6 +152,10 @@ TEST_F(CostModelTests, HashJoinCorrectnessTest) {
   auto seq_scan_2 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(2),
                                   std::vector<AnnotatedExpression>(), "table", false);
 
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_larger_outer = {};
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+
   execution::compiler::test::ExpressionMaker expr_maker;
   // Get Table columns
   auto col1 = expr_maker.MakeManaged(std::make_unique<parser::ColumnValueExpression>(
@@ -157,18 +163,14 @@ TEST_F(CostModelTests, HashJoinCorrectnessTest) {
   auto col2 = expr_maker.MakeManaged(std::make_unique<parser::ColumnValueExpression>(
       catalog::db_oid_t(1), catalog::table_oid_t(2), catalog::col_oid_t(1)));
 
-  // Make predicate: x.col1 == y.col1
-  auto predicate = expr_maker.ComparisonEq(col1, col2);
-  AnnotatedExpression ann_predicate = AnnotatedExpression(predicate, std::unordered_set<std::string>());
-
-  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_larger_outer = {};
-  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
-  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+//  // Make predicate: x.col1 == y.col1
+//  auto predicate = expr_maker.ComparisonEq(col1, col2);
+//  AnnotatedExpression ann_predicate = AnnotatedExpression(predicate, std::unordered_set<std::string>());
 
   // make first inner hash join
 
   Operator inner_hash_join_a_first =
-      InnerHashJoin::Make(std::vector<AnnotatedExpression>{ann_predicate},
+      InnerHashJoin::Make(std::vector<AnnotatedExpression>(),
                           std::vector<common::ManagedPointer<parser::AbstractExpression>>{
                               common::ManagedPointer<parser::AbstractExpression>(col1.Get())},
                           std::vector<common::ManagedPointer<parser::AbstractExpression>>{
@@ -201,7 +203,7 @@ TEST_F(CostModelTests, HashJoinCorrectnessTest) {
   children_smaller_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
 
   Operator inner_hash_join_a_second =
-      InnerHashJoin::Make(std::vector<AnnotatedExpression>{ann_predicate},
+      InnerHashJoin::Make(std::vector<AnnotatedExpression>(),
                           std::vector<common::ManagedPointer<parser::AbstractExpression>>{
                               common::ManagedPointer<parser::AbstractExpression>(col1.Get())},
                           std::vector<common::ManagedPointer<parser::AbstractExpression>>{
@@ -216,7 +218,109 @@ TEST_F(CostModelTests, HashJoinCorrectnessTest) {
 
   auto cost_smaller_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_hash_join);
 
-  EXPECT_GE(cost_smaller_outer, cost_larger_outer);
+  EXPECT_LT(cost_smaller_outer, cost_larger_outer);
 }
 
+
+TEST_F(CostModelTests, InnerNLJoinVsHashJoinCorrectnessTest) {
+  OptimizerContext context_((common::ManagedPointer<AbstractCostModel>(&cost_model_)));
+  context_.SetStatsStorage(&stats_storage_);
+  // create child gexprs
+  auto seq_scan_1 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(1),
+                                  std::vector<AnnotatedExpression>(), "table", false);
+  auto seq_scan_2 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(2),
+                                  std::vector<AnnotatedExpression>(), "table", false);
+
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_larger_outer = {};
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+
+  //Inner NL join
+
+  Operator inner_nl_join_a_first = InnerNLJoin::Make(std::vector<AnnotatedExpression>());
+  OperatorNode operator_expression_a_first = OperatorNode(inner_nl_join_a_first, std::move(children_larger_outer), nullptr);
+  auto gexpr_inner_nl_join =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_first));
+  context_.GetMemo().InsertExpression(gexpr_inner_nl_join, false);
+  auto left_group = context_.GetMemo().GetGroupByID(group_id_t(0));
+  auto right_group = context_.GetMemo().GetGroupByID(group_id_t(1));
+  auto curr_group = context_.GetMemo().GetGroupByID(group_id_t(2));
+  left_group->SetNumRows(table_stats_obj_a_.GetNumRows());
+  right_group->SetNumRows(table_stats_obj_b_.GetNumRows());
+  curr_group->SetNumRows(1000);
+  auto left_gexpr = left_group->GetPhysicalExpressions()[0];
+  auto right_gexpr = right_group->GetPhysicalExpressions()[0];
+  auto left_prop_set = new PropertySet();
+  auto right_prop_set = new PropertySet();
+
+  left_group->SetExpressionCost(left_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), left_gexpr),
+                                left_prop_set);
+  right_group->SetExpressionCost(right_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), right_gexpr),
+                                 right_prop_set);
+  auto inner_nl_cost_larger_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join);
+
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_smaller_outer = {};
+  children_smaller_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+  children_smaller_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+
+  Operator inner_nl_join_a_second = InnerNLJoin::Make(std::vector<AnnotatedExpression>());
+  OperatorNode operator_expression_a_second = OperatorNode(inner_nl_join_a_second, std::move(children_smaller_outer), nullptr);
+  auto gexpr_inner_nl_join_2 =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_second));
+  context_.GetMemo().InsertExpression(gexpr_inner_nl_join_2, false);
+  auto inner_nl_curr_group_2 = context_.GetMemo().GetGroupByID(group_id_t(3));
+  inner_nl_curr_group_2->SetNumRows(1000);
+  auto inner_nl_cost_smaller_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join_2);
+
+  // Hash join
+
+  execution::compiler::test::ExpressionMaker expr_maker;
+  // Get Table columns
+  auto col1 = expr_maker.MakeManaged(std::make_unique<parser::ColumnValueExpression>(
+      catalog::db_oid_t(1), catalog::table_oid_t(1), catalog::col_oid_t(1)));
+  auto col2 = expr_maker.MakeManaged(std::make_unique<parser::ColumnValueExpression>(
+      catalog::db_oid_t(1), catalog::table_oid_t(2), catalog::col_oid_t(1)));
+
+//  // Make predicate: x.col1 == y.col1
+//  auto predicate = expr_maker.ComparisonEq(col1, col2);
+//  AnnotatedExpression ann_predicate = AnnotatedExpression(predicate, std::unordered_set<std::string>());
+
+  // make first inner hash join
+
+  Operator inner_hash_join_a_first =
+      InnerHashJoin::Make(std::vector<AnnotatedExpression>(),
+                          std::vector<common::ManagedPointer<parser::AbstractExpression>>{
+                              common::ManagedPointer<parser::AbstractExpression>(col1.Get())},
+                          std::vector<common::ManagedPointer<parser::AbstractExpression>>{
+                              common::ManagedPointer<parser::AbstractExpression>(col2.Get())});
+  OperatorNode hash_operator_expression_a_first = OperatorNode(inner_hash_join_a_first, std::move(children_larger_outer), nullptr);
+  auto gexpr_inner_hash_join =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_first));
+
+  context_.GetMemo().InsertExpression(gexpr_inner_hash_join, false);
+
+  auto hash_cost_larger_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_hash_join);
+
+  Operator inner_hash_join_a_second =
+      InnerHashJoin::Make(std::vector<AnnotatedExpression>(),
+                          std::vector<common::ManagedPointer<parser::AbstractExpression>>{
+                              common::ManagedPointer<parser::AbstractExpression>(col1.Get())},
+                          std::vector<common::ManagedPointer<parser::AbstractExpression>>{
+                              common::ManagedPointer<parser::AbstractExpression>(col2.Get())});
+  OperatorNode hash_operator_expression_a_second = OperatorNode(inner_hash_join_a_second, std::move(children_smaller_outer), nullptr);
+  auto gexpr_inner_hash_join_2 =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&hash_operator_expression_a_second));
+
+  context_.GetMemo().InsertExpression(gexpr_inner_hash_join_2, false);
+  auto hash_curr_group_2 = context_.GetMemo().GetGroupByID(group_id_t(2));
+  hash_curr_group_2->SetNumRows(1000);
+
+  auto hash_cost_smaller_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_hash_join);
+
+  EXPECT_LT(hash_cost_smaller_outer, inner_nl_cost_smaller_outer);
+  EXPECT_LT(hash_cost_larger_outer, inner_nl_cost_larger_outer);
+
+}
+
+//add another test comparing both
 }  // namespace terrier::optimizer
