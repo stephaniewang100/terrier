@@ -106,10 +106,49 @@ class CostModel : public AbstractCostModel {
     auto total_row_count = memo_->GetGroupByID(gexpr_->GetGroupID())->GetNumRows();
 
     double init_cost = 0.0;
+//    double startup_cost = 0.0;
+//    double run_cost = 0.0;
 
+    //line 2666
+//    double inner_rescan_start_cost = 0.0;
+//    double inner_rescan_total_cost = 0.0;
+//    double inner_rescan_run_cost = 0.0;
+//    double inner_run_cost = 0.0;
+
+    //line 3995
+//    Cost		run_cost = cpu_tuple_cost * path->rows;
+//    double		nbytes = relation_byte_size(path->rows,
+//                                                      path->pathtarget->width);
+//    long		work_mem_bytes = work_mem * 1024L;
+//
+//    if (nbytes > work_mem_bytes)
+//    {
+//      /* It will spill, so account for re-read cost */
+//      double		npages = ceil(nbytes / BLCKSZ);
+//
+//      run_cost += seq_page_cost * npages;
+//    }
+//    *rescan_startup_cost = 0;
+//    *rescan_total_cost = run_cost;
+
+
+
+//    //line 2679
+//    if (outer_rows > 1) {
+//      init_cost += (outer_rows - 1) * inner_rescan_start_cost;
+//    }
+
+//    inner_rescan_run_cost = inner_rescan_total_cost - inner_rescan_start_cost;
+//
+//    run_cost += inner_run_cost;
+
+    //line 2704
     if (outer_rows > 1) {
-      init_cost += outer_rows * memo_->GetGroupByID(gexpr_->GetChildGroupId(1))->GetCostLB();
+      init_cost += (outer_rows - 1) * (tuple_cpu_cost * inner_rows);
     }
+
+
+    //line 2740
 
     // automatically set row counts to 1 if given counts aren't valid
     if (outer_rows <= 0) {
@@ -123,14 +162,17 @@ class CostModel : public AbstractCostModel {
     double num_tuples;
     double total_cpu_cost_per_tuple;
 
+    //line 2885
     // cases are computed by simply considering all tuple pairs
     num_tuples = outer_rows * inner_rows;
 
+    //line 2891 : cpu_per_tuple
     // compute cpu cost per tuple
     // formula: cpu cost for evaluating all qualifier clauses for the join per tuple + cpu cost to emit tuple
     total_cpu_cost_per_tuple =
         GetCPUCostForQuals(const_cast<std::vector<AnnotatedExpression> &&>(op->GetJoinPredicates())) + tuple_cpu_cost;
 
+    //line 2892,2896,2899
     // calculate total cpu cost for all tuples
     output_cost_ = init_cost + num_tuples * total_cpu_cost_per_tuple + tuple_cpu_cost * total_row_count;
   }
@@ -165,7 +207,9 @@ class CostModel : public AbstractCostModel {
     auto total_row_count = memo_->GetGroupByID(gexpr_->GetGroupID())->GetNumRows();
 
     double init_cost = 0.0;
+    //line 3509
     init_cost += memo_->GetGroupByID(gexpr_->GetChildGroupId(0))->GetCostLB();
+    //line 3524
     init_cost += (op_cpu_cost * op->GetJoinPredicates().size() + tuple_cpu_cost) * right_rows;
     init_cost += op_cpu_cost * op->GetJoinPredicates().size() * left_rows;
 
@@ -188,6 +232,7 @@ class CostModel : public AbstractCostModel {
       auto curr_right_child = pred.GetExpr()->GetChild(1).CastManagedPointerTo<parser::ColumnValueExpression>();
       auto curr_left_table_oid = curr_left_child->GetTableOid();
 
+      //line 3688
       common::ManagedPointer<ColumnStats> col_stats;
       if (curr_left_table_oid == left_table_oid) {
         col_stats = stats_storage_->GetTableStats(curr_left_child->GetDatabaseOid(), curr_left_child->GetTableOid())
@@ -242,15 +287,16 @@ class CostModel : public AbstractCostModel {
       }
     }
 
+    //line 3749
     auto hash_cost = GetCPUCostForQuals(const_cast<std::vector<AnnotatedExpression> &&>(op->GetJoinPredicates()));
-
+    //line 3818
     auto row_est = right_rows * bucket_size_frac * 0.5;
     if (row_est < 1.0) {
       row_est = 1.0;
     } else {
       row_est = uint32_t(row_est);
     }
-
+    //line 3818, 3841
     output_cost_ = init_cost + hash_cost * left_rows * row_est * 0.5 + tuple_cpu_cost * total_row_count;
   }
   /**
@@ -384,11 +430,6 @@ class CostModel : public AbstractCostModel {
    * Transaction Context
    */
   transaction::TransactionContext *txn_;
-
-  /**
-   * Accessor
-   */
-    catalog::CatalogAccessor *accessor_;
 
   /**
    * CPU cost to materialize a tuple
