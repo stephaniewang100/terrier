@@ -29,5 +29,5 @@ GroupExpression *OptimizerContext::MakeGroupExpression(common::ManagedPointer<Ab
   }
   return new GroupExpression(node->Contents(), std::move(child_groups));
 }
-
 }  // namespace terrier::optimizer
+

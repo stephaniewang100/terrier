@@ -252,7 +252,7 @@ class CostModel : public AbstractCostModel {
 
     //line 3749
     auto hash_cost = GetCPUCostForQuals(const_cast<std::vector<AnnotatedExpression> &&>(op->GetJoinPredicates()));
-    //line 3779, 3818
+    //line 3818
     auto row_est = right_rows * bucket_size_frac * 0.5;
     if (row_est < 1.0) {
       row_est = 1.0;
