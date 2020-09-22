@@ -106,50 +106,12 @@ class CostModel : public AbstractCostModel {
     auto total_row_count = memo_->GetGroupByID(gexpr_->GetGroupID())->GetNumRows();
 
     double init_cost = 0.0;
-//    double startup_cost = 0.0;
-//    double run_cost = 0.0;
-
-    //line 2666
-//    double inner_rescan_start_cost = 0.0;
-//    double inner_rescan_total_cost = 0.0;
-//    double inner_rescan_run_cost = 0.0;
-//    double inner_run_cost = 0.0;
-
-    //line 3995
-//    Cost		run_cost = cpu_tuple_cost * path->rows;
-//    double		nbytes = relation_byte_size(path->rows,
-//                                                      path->pathtarget->width);
-//    long		work_mem_bytes = work_mem * 1024L;
-//
-//    if (nbytes > work_mem_bytes)
-//    {
-//      /* It will spill, so account for re-read cost */
-//      double		npages = ceil(nbytes / BLCKSZ);
-//
-//      run_cost += seq_page_cost * npages;
-//    }
-//    *rescan_startup_cost = 0;
-//    *rescan_total_cost = run_cost;
-
-
-
-//    //line 2679
-//    if (outer_rows > 1) {
-//      init_cost += (outer_rows - 1) * inner_rescan_start_cost;
-//    }
-
-//    inner_rescan_run_cost = inner_rescan_total_cost - inner_rescan_start_cost;
-//
-//    run_cost += inner_run_cost;
-
     //line 2704
     if (outer_rows > 1) {
       init_cost += (outer_rows - 1) * (tuple_cpu_cost * inner_rows);
     }
 
-
     //line 2740
-
     // automatically set row counts to 1 if given counts aren't valid
     if (outer_rows <= 0) {
       outer_rows = 1;
@@ -207,8 +169,7 @@ class CostModel : public AbstractCostModel {
     auto total_row_count = memo_->GetGroupByID(gexpr_->GetGroupID())->GetNumRows();
 
     double init_cost = 0.0;
-    //line 3509
-    init_cost += memo_->GetGroupByID(gexpr_->GetChildGroupId(0))->GetCostLB();
+    //left = outer & right = inner
     //line 3524
     init_cost += (op_cpu_cost * op->GetJoinPredicates().size() + tuple_cpu_cost) * right_rows;
     init_cost += op_cpu_cost * op->GetJoinPredicates().size() * left_rows;
@@ -222,7 +183,7 @@ class CostModel : public AbstractCostModel {
     // overall saved estimations
     auto bucket_size_frac = 1.0;
     auto mcv_freq = 1.0;
-
+    // line 3674
     for (const auto &pred : op->GetJoinPredicates()) {
       // current estimated stats on left table
       double curr_bucket_size_frac;
@@ -241,7 +202,7 @@ class CostModel : public AbstractCostModel {
         col_stats = stats_storage_->GetTableStats(curr_right_child->GetDatabaseOid(), curr_right_child->GetTableOid())
                         ->GetColumnStats(curr_right_child->GetColumnOid());
       }
-
+      //line 3696
       // using the stats of the column referred to in the join predicate
       // estimate # of buckets for each ht: cardinality * 2 (mock real hash table which aims for load factor of 0.5)
       double buckets = col_stats->GetCardinality() * 2;
@@ -262,6 +223,7 @@ class CostModel : public AbstractCostModel {
         }
       }
 
+      //line 3667
       if (num_distinct > buckets) {
         curr_bucket_size_frac = 1.0 / buckets;
       } else {
@@ -282,6 +244,7 @@ class CostModel : public AbstractCostModel {
         bucket_size_frac = curr_bucket_size_frac;
       }
 
+      //line 3724
       if (mcv_freq > curr_mcv_freq) {
         mcv_freq = curr_mcv_freq;
       }
@@ -289,7 +252,7 @@ class CostModel : public AbstractCostModel {
 
     //line 3749
     auto hash_cost = GetCPUCostForQuals(const_cast<std::vector<AnnotatedExpression> &&>(op->GetJoinPredicates()));
-    //line 3818
+    //line 3779, 3818
     auto row_est = right_rows * bucket_size_frac * 0.5;
     if (row_est < 1.0) {
       row_est = 1.0;

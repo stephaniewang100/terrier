@@ -19,8 +19,8 @@ class CostModelTests : public TerrierTest {
  protected:
   static constexpr size_t NUM_ROWS_A = 100'000;
   static constexpr size_t NUM_ROWS_B = 5;
-  static constexpr size_t NUM_ROWS_C = 5;
-  static constexpr size_t NUM_ROWS_D = 5;
+  static constexpr size_t NUM_ROWS_C = 1'000;
+  static constexpr size_t NUM_ROWS_D = 100;
   static constexpr size_t NUM_ROWS_E = 100'000;
 
   ColumnStats column_stats_obj_a_1_;
@@ -90,7 +90,7 @@ class CostModelTests : public TerrierTest {
 };
 
 // NOLINTNEXTLINE
-TEST_F(CostModelTests, InnerNLJoinCorrectnessTest) {
+TEST_F(CostModelTests, InnerNLJoinCorrectnessTest1) {
   OptimizerContext context_((common::ManagedPointer<AbstractCostModel>(&cost_model_)));
   context_.SetStatsStorage(&stats_storage_);
   // create child gexprs
@@ -113,6 +113,261 @@ TEST_F(CostModelTests, InnerNLJoinCorrectnessTest) {
   auto curr_group = context_.GetMemo().GetGroupByID(group_id_t(2));
   left_group->SetNumRows(table_stats_obj_a_.GetNumRows());
   right_group->SetNumRows(table_stats_obj_b_.GetNumRows());
+  curr_group->SetNumRows(1000);
+  auto left_gexpr = left_group->GetPhysicalExpressions()[0];
+  auto right_gexpr = right_group->GetPhysicalExpressions()[0];
+  auto left_prop_set = new PropertySet();
+  auto right_prop_set = new PropertySet();
+
+  left_group->SetExpressionCost(left_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), left_gexpr),
+                                left_prop_set);
+  right_group->SetExpressionCost(right_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), right_gexpr),
+                                 right_prop_set);
+  auto cost_larger_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join);
+
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_smaller_outer = {};
+  children_smaller_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+  children_smaller_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+
+  Operator inner_nl_join_a_second = InnerNLJoin::Make(std::vector<AnnotatedExpression>());
+  OperatorNode operator_expression_a_second = OperatorNode(inner_nl_join_a_second, std::move(children_smaller_outer), nullptr);
+  auto gexpr_inner_nl_join_2 =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_second));
+  context_.GetMemo().InsertExpression(gexpr_inner_nl_join_2, false);
+  auto curr_group_2 = context_.GetMemo().GetGroupByID(group_id_t(3));
+  curr_group_2->SetNumRows(1000);
+  auto cost_smaller_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join_2);
+  //should be less than
+  EXPECT_LT(cost_smaller_outer, cost_larger_outer);
+}
+
+TEST_F(CostModelTests, InnerNLJoinCorrectnessTest2) {
+  OptimizerContext context_((common::ManagedPointer<AbstractCostModel>(&cost_model_)));
+  context_.SetStatsStorage(&stats_storage_);
+  // create child gexprs
+  auto seq_scan_1 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(3),
+                                  std::vector<AnnotatedExpression>(), "table", false);
+  auto seq_scan_2 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(4),
+                                  std::vector<AnnotatedExpression>(), "table", false);
+
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_larger_outer = {};
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+
+  Operator inner_nl_join_a_first = InnerNLJoin::Make(std::vector<AnnotatedExpression>());
+  OperatorNode operator_expression_a_first = OperatorNode(inner_nl_join_a_first, std::move(children_larger_outer), nullptr);
+  auto gexpr_inner_nl_join =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_first));
+  context_.GetMemo().InsertExpression(gexpr_inner_nl_join, false);
+  auto left_group = context_.GetMemo().GetGroupByID(group_id_t(0));
+  auto right_group = context_.GetMemo().GetGroupByID(group_id_t(1));
+  auto curr_group = context_.GetMemo().GetGroupByID(group_id_t(2));
+  left_group->SetNumRows(table_stats_obj_c_.GetNumRows());
+  right_group->SetNumRows(table_stats_obj_d_.GetNumRows());
+  curr_group->SetNumRows(1000);
+  auto left_gexpr = left_group->GetPhysicalExpressions()[0];
+  auto right_gexpr = right_group->GetPhysicalExpressions()[0];
+  auto left_prop_set = new PropertySet();
+  auto right_prop_set = new PropertySet();
+
+  left_group->SetExpressionCost(left_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), left_gexpr),
+                                left_prop_set);
+  right_group->SetExpressionCost(right_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), right_gexpr),
+                                 right_prop_set);
+  auto cost_larger_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join);
+
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_smaller_outer = {};
+  children_smaller_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+  children_smaller_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+
+  Operator inner_nl_join_a_second = InnerNLJoin::Make(std::vector<AnnotatedExpression>());
+  OperatorNode operator_expression_a_second = OperatorNode(inner_nl_join_a_second, std::move(children_smaller_outer), nullptr);
+  auto gexpr_inner_nl_join_2 =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_second));
+  context_.GetMemo().InsertExpression(gexpr_inner_nl_join_2, false);
+  auto curr_group_2 = context_.GetMemo().GetGroupByID(group_id_t(3));
+  curr_group_2->SetNumRows(1000);
+  auto cost_smaller_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join_2);
+  //should be less than
+  EXPECT_LT(cost_smaller_outer, cost_larger_outer);
+}
+
+TEST_F(CostModelTests, InnerNLJoinCorrectnessTest3) {
+  OptimizerContext context_((common::ManagedPointer<AbstractCostModel>(&cost_model_)));
+  context_.SetStatsStorage(&stats_storage_);
+  // create child gexprs
+  auto seq_scan_1 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(1),
+                                  std::vector<AnnotatedExpression>(), "table", false);
+  auto seq_scan_2 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(3),
+                                  std::vector<AnnotatedExpression>(), "table", false);
+
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_larger_outer = {};
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+
+  Operator inner_nl_join_a_first = InnerNLJoin::Make(std::vector<AnnotatedExpression>());
+  OperatorNode operator_expression_a_first = OperatorNode(inner_nl_join_a_first, std::move(children_larger_outer), nullptr);
+  auto gexpr_inner_nl_join =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_first));
+  context_.GetMemo().InsertExpression(gexpr_inner_nl_join, false);
+  auto left_group = context_.GetMemo().GetGroupByID(group_id_t(0));
+  auto right_group = context_.GetMemo().GetGroupByID(group_id_t(1));
+  auto curr_group = context_.GetMemo().GetGroupByID(group_id_t(2));
+  left_group->SetNumRows(table_stats_obj_a_.GetNumRows());
+  right_group->SetNumRows(table_stats_obj_c_.GetNumRows());
+  curr_group->SetNumRows(1000);
+  auto left_gexpr = left_group->GetPhysicalExpressions()[0];
+  auto right_gexpr = right_group->GetPhysicalExpressions()[0];
+  auto left_prop_set = new PropertySet();
+  auto right_prop_set = new PropertySet();
+
+  left_group->SetExpressionCost(left_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), left_gexpr),
+                                left_prop_set);
+  right_group->SetExpressionCost(right_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), right_gexpr),
+                                 right_prop_set);
+  auto cost_larger_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join);
+
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_smaller_outer = {};
+  children_smaller_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+  children_smaller_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+
+  Operator inner_nl_join_a_second = InnerNLJoin::Make(std::vector<AnnotatedExpression>());
+  OperatorNode operator_expression_a_second = OperatorNode(inner_nl_join_a_second, std::move(children_smaller_outer), nullptr);
+  auto gexpr_inner_nl_join_2 =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_second));
+  context_.GetMemo().InsertExpression(gexpr_inner_nl_join_2, false);
+  auto curr_group_2 = context_.GetMemo().GetGroupByID(group_id_t(3));
+  curr_group_2->SetNumRows(1000);
+  auto cost_smaller_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join_2);
+  //should be less than
+  EXPECT_LT(cost_smaller_outer, cost_larger_outer);
+}
+
+TEST_F(CostModelTests, InnerNLJoinCorrectnessTest4) {
+  OptimizerContext context_((common::ManagedPointer<AbstractCostModel>(&cost_model_)));
+  context_.SetStatsStorage(&stats_storage_);
+  // create child gexprs
+  auto seq_scan_1 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(3),
+                                  std::vector<AnnotatedExpression>(), "table", false);
+  auto seq_scan_2 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(2),
+                                  std::vector<AnnotatedExpression>(), "table", false);
+
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_larger_outer = {};
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+
+  Operator inner_nl_join_a_first = InnerNLJoin::Make(std::vector<AnnotatedExpression>());
+  OperatorNode operator_expression_a_first = OperatorNode(inner_nl_join_a_first, std::move(children_larger_outer), nullptr);
+  auto gexpr_inner_nl_join =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_first));
+  context_.GetMemo().InsertExpression(gexpr_inner_nl_join, false);
+  auto left_group = context_.GetMemo().GetGroupByID(group_id_t(0));
+  auto right_group = context_.GetMemo().GetGroupByID(group_id_t(1));
+  auto curr_group = context_.GetMemo().GetGroupByID(group_id_t(2));
+  left_group->SetNumRows(table_stats_obj_c_.GetNumRows());
+  right_group->SetNumRows(table_stats_obj_b_.GetNumRows());
+  curr_group->SetNumRows(1000);
+  auto left_gexpr = left_group->GetPhysicalExpressions()[0];
+  auto right_gexpr = right_group->GetPhysicalExpressions()[0];
+  auto left_prop_set = new PropertySet();
+  auto right_prop_set = new PropertySet();
+
+  left_group->SetExpressionCost(left_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), left_gexpr),
+                                left_prop_set);
+  right_group->SetExpressionCost(right_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), right_gexpr),
+                                 right_prop_set);
+  auto cost_larger_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join);
+
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_smaller_outer = {};
+  children_smaller_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+  children_smaller_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+
+  Operator inner_nl_join_a_second = InnerNLJoin::Make(std::vector<AnnotatedExpression>());
+  OperatorNode operator_expression_a_second = OperatorNode(inner_nl_join_a_second, std::move(children_smaller_outer), nullptr);
+  auto gexpr_inner_nl_join_2 =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_second));
+  context_.GetMemo().InsertExpression(gexpr_inner_nl_join_2, false);
+  auto curr_group_2 = context_.GetMemo().GetGroupByID(group_id_t(3));
+  curr_group_2->SetNumRows(1000);
+  auto cost_smaller_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join_2);
+  //should be less than
+  EXPECT_LT(cost_smaller_outer, cost_larger_outer);
+}
+
+TEST_F(CostModelTests, InnerNLJoinCorrectnessTest5) {
+  OptimizerContext context_((common::ManagedPointer<AbstractCostModel>(&cost_model_)));
+  context_.SetStatsStorage(&stats_storage_);
+  // create child gexprs
+  auto seq_scan_1 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(4),
+                                  std::vector<AnnotatedExpression>(), "table", false);
+  auto seq_scan_2 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(2),
+                                  std::vector<AnnotatedExpression>(), "table", false);
+
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_larger_outer = {};
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+
+  Operator inner_nl_join_a_first = InnerNLJoin::Make(std::vector<AnnotatedExpression>());
+  OperatorNode operator_expression_a_first = OperatorNode(inner_nl_join_a_first, std::move(children_larger_outer), nullptr);
+  auto gexpr_inner_nl_join =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_first));
+  context_.GetMemo().InsertExpression(gexpr_inner_nl_join, false);
+  auto left_group = context_.GetMemo().GetGroupByID(group_id_t(0));
+  auto right_group = context_.GetMemo().GetGroupByID(group_id_t(1));
+  auto curr_group = context_.GetMemo().GetGroupByID(group_id_t(2));
+  left_group->SetNumRows(table_stats_obj_d_.GetNumRows());
+  right_group->SetNumRows(table_stats_obj_b_.GetNumRows());
+  curr_group->SetNumRows(1000);
+  auto left_gexpr = left_group->GetPhysicalExpressions()[0];
+  auto right_gexpr = right_group->GetPhysicalExpressions()[0];
+  auto left_prop_set = new PropertySet();
+  auto right_prop_set = new PropertySet();
+
+  left_group->SetExpressionCost(left_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), left_gexpr),
+                                left_prop_set);
+  right_group->SetExpressionCost(right_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), right_gexpr),
+                                 right_prop_set);
+  auto cost_larger_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join);
+
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_smaller_outer = {};
+  children_smaller_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+  children_smaller_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+
+  Operator inner_nl_join_a_second = InnerNLJoin::Make(std::vector<AnnotatedExpression>());
+  OperatorNode operator_expression_a_second = OperatorNode(inner_nl_join_a_second, std::move(children_smaller_outer), nullptr);
+  auto gexpr_inner_nl_join_2 =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_second));
+  context_.GetMemo().InsertExpression(gexpr_inner_nl_join_2, false);
+  auto curr_group_2 = context_.GetMemo().GetGroupByID(group_id_t(3));
+  curr_group_2->SetNumRows(1000);
+  auto cost_smaller_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join_2);
+  //should be less than
+  EXPECT_LT(cost_smaller_outer, cost_larger_outer);
+}
+
+TEST_F(CostModelTests, InnerNLJoinCorrectnessTest6) {
+  OptimizerContext context_((common::ManagedPointer<AbstractCostModel>(&cost_model_)));
+  context_.SetStatsStorage(&stats_storage_);
+  // create child gexprs
+  auto seq_scan_1 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(1),
+                                  std::vector<AnnotatedExpression>(), "table", false);
+  auto seq_scan_2 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(4),
+                                  std::vector<AnnotatedExpression>(), "table", false);
+
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_larger_outer = {};
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+
+  Operator inner_nl_join_a_first = InnerNLJoin::Make(std::vector<AnnotatedExpression>());
+  OperatorNode operator_expression_a_first = OperatorNode(inner_nl_join_a_first, std::move(children_larger_outer), nullptr);
+  auto gexpr_inner_nl_join =
+      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_first));
+  context_.GetMemo().InsertExpression(gexpr_inner_nl_join, false);
+  auto left_group = context_.GetMemo().GetGroupByID(group_id_t(0));
+  auto right_group = context_.GetMemo().GetGroupByID(group_id_t(1));
+  auto curr_group = context_.GetMemo().GetGroupByID(group_id_t(2));
+  left_group->SetNumRows(table_stats_obj_a_.GetNumRows());
+  right_group->SetNumRows(table_stats_obj_d_.GetNumRows());
   curr_group->SetNumRows(1000);
   auto left_gexpr = left_group->GetPhysicalExpressions()[0];
   auto right_gexpr = right_group->GetPhysicalExpressions()[0];
@@ -216,8 +471,8 @@ TEST_F(CostModelTests, HashJoinCorrectnessTest) {
   auto gexpr_inner_hash_join_2 =
       context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_second));
   context_.GetMemo().InsertExpression(gexpr_inner_hash_join_2, false);
-  auto right_group_2 = context_.GetMemo().GetGroupByID(group_id_t(4));
-  auto curr_group_2 = context_.GetMemo().GetGroupByID(group_id_t(5));
+  auto right_group_2 = context_.GetMemo().GetGroupByID(group_id_t(2));
+  auto curr_group_2 = context_.GetMemo().GetGroupByID(group_id_t(3));
   right_group_2->SetNumRows(table_stats_obj_e_.GetNumRows());
   curr_group_2->SetNumRows(1000);
 
