@@ -405,9 +405,9 @@ TEST_F(CostModelTests, HashJoinCorrectnessTest) {
   auto seq_scan_2 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(2),
                                   std::vector<AnnotatedExpression>(), "table", false);
 
-  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_larger_outer = {};
-  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
-  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_smaller = {};
+  children_smaller.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+  children_smaller.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
 
   execution::compiler::test::ExpressionMaker expr_maker;
 // Get Table columns
@@ -417,85 +417,6 @@ TEST_F(CostModelTests, HashJoinCorrectnessTest) {
       catalog::db_oid_t(1), catalog::table_oid_t(2), catalog::col_oid_t(1)));
 
 // make first inner hash join
-  Operator inner_hash_join_a_first =
-      InnerHashJoin::Make(std::vector<AnnotatedExpression>(),
-                          std::vector<common::ManagedPointer<parser::AbstractExpression>>{
-                              common::ManagedPointer<parser::AbstractExpression>(col1.Get())},
-                          std::vector<common::ManagedPointer<parser::AbstractExpression>>{
-                              common::ManagedPointer<parser::AbstractExpression>(col2.Get())});
-  OperatorNode operator_expression_a_first = OperatorNode(inner_hash_join_a_first, std::move(children_larger_outer), nullptr);
-  auto gexpr_inner_hash_join =
-      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_first));
-
-  context_.GetMemo().InsertExpression(gexpr_inner_hash_join, false);
-  auto left_group = context_.GetMemo().GetGroupByID(group_id_t(0));
-  auto right_group = context_.GetMemo().GetGroupByID(group_id_t(1));
-  auto curr_group = context_.GetMemo().GetGroupByID(group_id_t(2));
-  left_group->SetNumRows(table_stats_obj_a_.GetNumRows());
-  right_group->SetNumRows(table_stats_obj_b_.GetNumRows());
-  curr_group->SetNumRows(1000);
-
-  auto left_gexpr = left_group->GetPhysicalExpressions()[0];
-  auto right_gexpr = right_group->GetPhysicalExpressions()[0];
-  auto left_prop_set = new PropertySet();
-  auto right_prop_set = new PropertySet();
-
-  left_group->SetExpressionCost(left_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), left_gexpr),
-                                left_prop_set);
-  right_group->SetExpressionCost(right_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), right_gexpr),
-                                 right_prop_set);
-  auto cost_larger_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_hash_join);
-
-  auto seq_scan_5 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(5),
-                                  std::vector<AnnotatedExpression>(), "table", false);
-
-  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_smaller_outer = {};
-  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
-  children_larger_outer.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_5, {}, nullptr)));
-
-  auto col5 = expr_maker.MakeManaged(std::make_unique<parser::ColumnValueExpression>(
-      catalog::db_oid_t(1), catalog::table_oid_t(5), catalog::col_oid_t(1)));
-
-  Operator inner_hash_join_a_second =
-      InnerHashJoin::Make(std::vector<AnnotatedExpression>(),
-                          std::vector<common::ManagedPointer<parser::AbstractExpression>>{
-                              common::ManagedPointer<parser::AbstractExpression>(col1.Get())},
-                          std::vector<common::ManagedPointer<parser::AbstractExpression>>{
-                              common::ManagedPointer<parser::AbstractExpression>(col5.Get())});
-  OperatorNode operator_expression_a_second = OperatorNode(inner_hash_join_a_second, std::move(children_smaller_outer), nullptr);
-  auto gexpr_inner_hash_join_2 =
-      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_second));
-
-  context_.GetMemo().InsertExpression(gexpr_inner_hash_join_2, false);
-  auto curr_group_2 = context_.GetMemo().GetGroupByID(group_id_t(2));
-  curr_group_2->SetNumRows(1000);
-
-  auto cost_smaller_outer = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_hash_join);
-
-  EXPECT_GT(cost_smaller_outer, cost_larger_outer);
-}
-
-TEST_F(CostModelTests, HashJoinCorrectnessTest2) {
-  OptimizerContext context_((common::ManagedPointer<AbstractCostModel>(&cost_model_)));
-  context_.SetStatsStorage(&stats_storage_);
-  // make first inner hash join (100'000 x 5)
-  // create child gexprs
-  auto seq_scan_1 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(1),
-                                  std::vector<AnnotatedExpression>(), "table", false);
-  auto seq_scan_2 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(2),
-                                  std::vector<AnnotatedExpression>(), "table", false);
-
-  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_smaller = {};
-  children_smaller.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
-  children_smaller.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
-
-  execution::compiler::test::ExpressionMaker expr_maker;
-  // Get Table columns
-  auto col1 = expr_maker.MakeManaged(std::make_unique<parser::ColumnValueExpression>(
-      catalog::db_oid_t(1), catalog::table_oid_t(1), catalog::col_oid_t(1)));
-  auto col2 = expr_maker.MakeManaged(std::make_unique<parser::ColumnValueExpression>(
-      catalog::db_oid_t(1), catalog::table_oid_t(2), catalog::col_oid_t(1)));
-
   Operator inner_hash_join_a_first =
       InnerHashJoin::Make(std::vector<AnnotatedExpression>(),
                           std::vector<common::ManagedPointer<parser::AbstractExpression>>{
@@ -523,9 +444,11 @@ TEST_F(CostModelTests, HashJoinCorrectnessTest2) {
                                 left_prop_set);
   right_group->SetExpressionCost(right_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), right_gexpr),
                                  right_prop_set);
-  auto cost_smaller= cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_hash_join);
+  auto cost_smaller = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_hash_join);
 
-  // make second inner hash join (100'000 x 100'000)
+  OptimizerContext context_2((common::ManagedPointer<AbstractCostModel>(&cost_model_)));
+  context_2.SetStatsStorage(&stats_storage_);
+
   auto seq_scan_5 = SeqScan::Make(catalog::db_oid_t(1), catalog::table_oid_t(5),
                                   std::vector<AnnotatedExpression>(), "table", false);
 
@@ -533,43 +456,41 @@ TEST_F(CostModelTests, HashJoinCorrectnessTest2) {
   children_larger.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
   children_larger.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_5, {}, nullptr)));
 
-  execution::compiler::test::ExpressionMaker expr_maker_2;
   // Get Table columns
-  auto col1_2 = expr_maker_2.MakeManaged(std::make_unique<parser::ColumnValueExpression>(
-      catalog::db_oid_t(1), catalog::table_oid_t(1), catalog::col_oid_t(1)));
-  auto col2_2 = expr_maker_2.MakeManaged(std::make_unique<parser::ColumnValueExpression>(
+  auto col5 = expr_maker.MakeManaged(std::make_unique<parser::ColumnValueExpression>(
       catalog::db_oid_t(1), catalog::table_oid_t(5), catalog::col_oid_t(1)));
 
   Operator inner_hash_join_a_second =
       InnerHashJoin::Make(std::vector<AnnotatedExpression>(),
                           std::vector<common::ManagedPointer<parser::AbstractExpression>>{
-                              common::ManagedPointer<parser::AbstractExpression>(col1_2.Get())},
+                              common::ManagedPointer<parser::AbstractExpression>(col1.Get())},
                           std::vector<common::ManagedPointer<parser::AbstractExpression>>{
-                              common::ManagedPointer<parser::AbstractExpression>(col2_2.Get())});
-  OperatorNode operator_expression_a_second = OperatorNode(inner_hash_join_a_first, std::move(children_larger), nullptr);
+                              common::ManagedPointer<parser::AbstractExpression>(col5.Get())});
+  OperatorNode operator_expression_a_second = OperatorNode(inner_hash_join_a_second, std::move(children_larger), nullptr);
   auto gexpr_inner_hash_join_2 =
-      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_second));
-  context_.GetMemo().InsertExpression(gexpr_inner_hash_join_2, false);
-  auto right_group_2 = context_.GetMemo().GetGroupByID(group_id_t(2));
-  auto curr_group_2 = context_.GetMemo().GetGroupByID(group_id_t(3));
+      context_2.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_second));
+
+  auto left_group_2 = context_2.GetMemo().GetGroupByID(group_id_t(0));
+  auto right_group_2 = context_2.GetMemo().GetGroupByID(group_id_t(1));
+  auto curr_group_2 = context_2.GetMemo().GetGroupByID(group_id_t(2));
+  left_group_2->SetNumRows(table_stats_obj_a_.GetNumRows());
   right_group_2->SetNumRows(table_stats_obj_e_.GetNumRows());
   curr_group_2->SetNumRows(1000);
 
-  auto right_gexpr_2 = right_group->GetPhysicalExpressions()[0];
+  auto left_gexpr_2 = left_group_2->GetPhysicalExpressions()[0];
+  auto right_gexpr_2 = right_group_2->GetPhysicalExpressions()[0];
+  auto left_prop_set_2 = new PropertySet();
   auto right_prop_set_2 = new PropertySet();
 
-  left_group->SetExpressionCost(left_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), left_gexpr),
-                                left_prop_set);
-  right_group_2->SetExpressionCost(right_gexpr, cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), right_gexpr_2),
+  left_group_2->SetExpressionCost(left_gexpr_2, cost_model_.CalculateCost(nullptr, nullptr, &context_2.GetMemo(), left_gexpr_2),
+                                left_prop_set_2);
+  right_group_2->SetExpressionCost(right_gexpr_2, cost_model_.CalculateCost(nullptr, nullptr, &context_2.GetMemo(), right_gexpr_2),
                                  right_prop_set_2);
-  auto cost_larger= cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_hash_join_2);
 
-  EXPECT_LT(cost_smaller, cost_larger);
-  // add larger table pair
+  auto cost_larger = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_hash_join_2);
+
+  EXPECT_GT(cost_larger, cost_smaller);
 }
-
-
-
 
 TEST_F(CostModelTests, InnerNLJoinVsHashJoinCorrectnessTest) {
   OptimizerContext context_((common::ManagedPointer<AbstractCostModel>(&cost_model_)));
@@ -634,5 +555,4 @@ TEST_F(CostModelTests, InnerNLJoinVsHashJoinCorrectnessTest) {
 
   EXPECT_LT(hash_cost, inner_nl_cost);
 }
-
 }  // namespace terrier::optimizer
