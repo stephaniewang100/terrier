@@ -470,6 +470,7 @@ TEST_F(CostModelTests, HashJoinCorrectnessTest) {
   auto gexpr_inner_hash_join_2 =
       context_2.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression_a_second));
 
+  context_2.GetMemo().InsertExpression(gexpr_inner_hash_join_2,false);
   auto left_group_2 = context_2.GetMemo().GetGroupByID(group_id_t(0));
   auto right_group_2 = context_2.GetMemo().GetGroupByID(group_id_t(1));
   auto curr_group_2 = context_2.GetMemo().GetGroupByID(group_id_t(2));
@@ -530,7 +531,8 @@ TEST_F(CostModelTests, InnerNLJoinVsHashJoinCorrectnessTest) {
   auto inner_nl_cost = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_nl_join);
 
   // Hash join
-
+  OptimizerContext context_2((common::ManagedPointer<AbstractCostModel>(&cost_model_)));
+  context_2.SetStatsStorage(&stats_storage_);
   execution::compiler::test::ExpressionMaker expr_maker;
   // Get Table columns
   auto col1 = expr_maker.MakeManaged(std::make_unique<parser::ColumnValueExpression>(
@@ -546,12 +548,17 @@ TEST_F(CostModelTests, InnerNLJoinVsHashJoinCorrectnessTest) {
                               common::ManagedPointer<parser::AbstractExpression>(col1.Get())},
                           std::vector<common::ManagedPointer<parser::AbstractExpression>>{
                               common::ManagedPointer<parser::AbstractExpression>(col2.Get())});
-  OperatorNode hash_operator_expression = OperatorNode(inner_hash_join, std::move(children_smaller_outer), nullptr);
-  auto gexpr_inner_hash_join =
-      context_.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&operator_expression));
 
-  context_.GetMemo().InsertExpression(gexpr_inner_hash_join, false);
-  auto hash_cost = cost_model_.CalculateCost(nullptr, nullptr, &context_.GetMemo(), gexpr_inner_hash_join);
+  std::vector<std::unique_ptr<AbstractOptimizerNode>> children_smaller_outer_2 = {};
+  children_smaller_outer_2.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_2, {}, nullptr)));
+  children_smaller_outer_2.push_back(std::make_unique<OperatorNode>(OperatorNode(seq_scan_1, {}, nullptr)));
+
+  OperatorNode hash_operator_expression = OperatorNode(inner_hash_join, std::move(children_smaller_outer_2), nullptr);
+  auto gexpr_inner_hash_join =
+      context_2.MakeGroupExpression(common::ManagedPointer<AbstractOptimizerNode>(&hash_operator_expression));
+
+  context_2.GetMemo().InsertExpression(gexpr_inner_hash_join, false);
+  auto hash_cost = cost_model_.CalculateCost(nullptr, nullptr, &context_2.GetMemo(), gexpr_inner_hash_join);
 
   EXPECT_LT(hash_cost, inner_nl_cost);
 }
